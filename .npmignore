@@ -1,0 +1,33 @@
+# Source files (only distribute build/)
+/src
+/internal_docs
+
+# Config & tooling
+tsconfig.json
+tsconfig*.json
+.eslintrc*
+.prettierrc*
+nodemon.json
+
+# GitHub metadata
+.github/
+
+# Tests
+**/__tests__/
+**/*.test.ts
+**/*.spec.ts
+
+# Environment
+.env
+.env.*
+*.local
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# TypeScript incremental build info
+*.tsbuildinfo

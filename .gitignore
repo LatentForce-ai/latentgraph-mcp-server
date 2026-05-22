@@ -1,0 +1,42 @@
+# Build output
+/build
+/dist
+
+# Dependencies
+/node_modules
+
+# Internal / private files
+/internal_docs
+/.claude
+
+# Package tarballs
+*.tgz
+*.tar.gz
+
+# Project index (generated at runtime)
+.lgraph/
+
+# Environment variables
+.env
+.env.*
+*.local
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.idea/
+.vscode/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test output
+/coverage
+
+# TypeScript incremental build info
+*.tsbuildinfo

@@ -1,0 +1,71 @@
+{
+    "name": "@latentforce/latentgraph",
+    "version": "1.0.27",
+    "description": "Latentgraph CLI - AI-powered code intelligence with MCP support",
+    "type": "module",
+    "main": "./build/index.js",
+    "exports": {
+        ".": "./build/index.js"
+    },
+    "bin": {
+        "lgraph": "./build/index.js"
+    }, 
+    "files": [
+        "build"
+    ],
+    "scripts": {
+        "build": "tsc && node -e \"require('fs').chmodSync('build/index.js', 0o755)\"",
+        "dev": "tsc --watch",
+        "start": "node build/index.js",
+        "mcp": "node build/index.js mcp",
+        "prepublishOnly": "npm run build",
+        "test": "npm run build && node --test build/integration/__tests__/integration.test.js"
+    },
+    "keywords": [
+        "mcp",
+        "model-context-protocol",
+        "code-intelligence",
+        "dependency-graph",
+        "ai",
+        "cli",
+        "typescript",
+        "claude",
+        "copilot",
+        "cursor",
+        "code-analysis",
+        "codebase-indexing"
+    ],
+    "author": {
+        "name": "Latentforce",
+        "url": "https://www.latentforce.ai/"
+    },
+    "license": "MIT",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/LatentForce-ai/latentgraph-mcp-server.git"
+    },
+    "homepage": "https://latentgraph.latentforce.ai/",
+    "bugs": {
+        "url": "https://github.com/LatentForce-ai/latentgraph-mcp-server/issues"
+    },
+    "engines": {
+        "node": ">=18"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.25.3",
+        "@netlify/framework-info": "^10.0.5",
+        "commander": "^12.0.0",
+        "g": "^2.0.1",
+        "js-tiktoken": "^1.0.21",
+        "sloc": "^0.3.2",
+        "ws": "^8.14.0",
+        "zod": "^3.25.76"
+    },
+    "devDependencies": {
+        "@types/node": "^25.6.0",
+        "@types/sloc": "^0.2.3",
+        "@types/ws": "^8.5.10",
+        "nodemon": "^3.1.14",
+        "typescript": "^5.9.3"
+    }
+}
