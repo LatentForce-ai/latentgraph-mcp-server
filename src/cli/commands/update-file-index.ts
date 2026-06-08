@@ -1,8 +1,12 @@
 import { writeFileSync, mkdirSync } from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
-import { readProjectConfig, isReadOnlyProject } from '../../utils/config.js';
+import { readProjectConfig, writeProjectConfig, isReadOnlyProject } from '../../utils/config.js';
 import { sendUpdateFileIndex } from '../../utils/api-client.js';
 import { resolveApiKey } from '../../utils/auth-resolver.js';
+
+const execAsync = promisify(exec);
 
 /**
  * lgraph update-file-index
@@ -51,11 +55,21 @@ export async function updateFileIndexCommand(): Promise<void> {
         console.error('\n❌ No branch configured in .lgraph/config.json — run "lgraph init" first.\n');
         process.exit(1);
     }
+
+    // Include current HEAD so the server can skip the A1 proxy git call.
+    let currentCommit: string | undefined;
+    try {
+        const { stdout } = await execAsync('git rev-parse HEAD', { cwd: projectRoot });
+        currentCommit = stdout.trim() || undefined;
+    } catch { /* not a git repo — server falls back to A1 proxy */ }
+
     console.log('[UpdateFileIndex] Sending to backend (server-side git diff + delta)...');
     try {
         const result = await sendUpdateFileIndex(apiKey, {
             project_id: projectId,
             branch,
+            current_commit: currentCommit,
+            umbrella_id: process.env.LGRAPH_UMBRELLA_ID || undefined,
         });
 
         if (!result.success) {
@@ -94,6 +108,16 @@ export async function updateFileIndexCommand(): Promise<void> {
         }
         if (s.cost_usd != null) console.log(`  LLM cost         : $${s.cost_usd.toFixed(4)}`);
         console.log('');
+        // Persist the indexed commit so lgraph analyze can detect stale backend index.
+        if (currentCommit && result.mode !== 'error') {
+            try {
+                const cfg = readProjectConfig(projectRoot);
+                if (cfg) {
+                    cfg.file_index_last_commit = currentCommit;
+                    writeProjectConfig(cfg, projectRoot);
+                }
+            } catch { /* non-fatal */ }
+        }
         // Write step stats so update-all can include them in the summary table
         try {
             const statsDir = path.join(process.cwd(), '.lgraph', '.step-stats');

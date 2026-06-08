@@ -1,42 +1,15 @@
 import * as https from 'node:https';
 import * as http from 'node:http';
 import { API_BASE_URL, API_BASE_URL_ORCH } from './config.js';
-import { getMachineFingerprint } from './machine-id.js';
 
-export interface GuestKeyResponse {
-    api_key: string;
-    is_new?: boolean;        // True if new key was created, false if existing key returned
-    machine_id?: string;     // The machine ID this key is bound to
-    project_id?: string;     // Project ID auto-created for guest
-}
-
-/**
- * Request a guest API key bound to this machine
- * The backend will:
- * - Create a new guest key if this machine_id hasn't been seen before
- * - Return the existing guest key if this machine_id already has one
- * - Optionally enforce usage limits per machine
- */
-export async function requestGuestKey(): Promise<GuestKeyResponse> {
-    const fingerprint = getMachineFingerprint();
-
-    const response = await fetch(`${API_BASE_URL}/api/guest-key`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-            machine_id: fingerprint.machine_id,
-            platform: fingerprint.platform,
-        }),
-    });
-
-    if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || `HTTP ${response.status}`);
+function parseInsufficientCreditsMessage(body: string): string {
+    try {
+        const detail = JSON.parse(body)?.detail;
+        const msg = typeof detail === 'object' ? (detail?.message ?? body) : (detail ?? body);
+        return `Insufficient credits: ${msg}`;
+    } catch {
+        return `Insufficient credits: ${body}`;
     }
-
-    return await response.json();
 }
 
 export interface Project {
@@ -116,10 +89,13 @@ export interface PublicProjectInfo {
 
 /**
  * Fetch public project info by share token (no auth required).
- * Calls GET /api/public/{token}/info
+ * Calls GET /api/public/{token}/join — the dedicated join endpoint, which
+ * returns the same payload as /info but records the join server-side.
  */
 export async function fetchPublicProjectInfo(token: string): Promise<PublicProjectInfo> {
-    const response = await fetch(`${API_BASE_URL}/api/public/${encodeURIComponent(token)}/info`, {
+    // Only called by `lgraph join -p`. Hitting /join is what records the join —
+    // no headers or API key needed; the count can't be inflated by browser views.
+    const response = await fetch(`${API_BASE_URL}/api/public/${encodeURIComponent(token)}/join`, {
         method: 'GET',
     });
 
@@ -129,7 +105,7 @@ export async function fetchPublicProjectInfo(token: string): Promise<PublicProje
     // Detect HTML response (SPA fallback or proxy error page)
     if (!contentType.includes('application/json') || text.trimStart().startsWith('<')) {
         throw new Error(
-            `Server returned a non-JSON response for /api/public/${token}/info.\n` +
+            `Server returned a non-JSON response for /api/public/${token}/join.\n` +
             `  This usually means the public share feature is not yet deployed on the server.\n` +
             `  Server: ${API_BASE_URL}  Status: ${response.status}`
         );
@@ -250,6 +226,7 @@ export interface UpdateDrgPayload {
     changes: UpdateDrgChanges;
     files: UpdateDrgFile[];
     branch?: string;  // user's branch to update
+    umbrella_id?: string;  // When set, billing is owned by an umbrella reservation
 }
 
 export interface UpdateDrgResponse {
@@ -277,6 +254,9 @@ export async function sendUpdateDrg(
 
     if (!response.ok) {
         const text = await response.text();
+        if (response.status === 402) {
+            throw new Error(parseInsufficientCreditsMessage(text));
+        }
         throw new Error(text || `HTTP ${response.status}`);
     }
 
@@ -293,6 +273,7 @@ export interface UpdateImplicitPayload {
     changes: { added: string[]; modified: string[]; deleted: string[] };
     files: UpdateImplicitFile[];
     branch?: string;  // user's branch to update
+    umbrella_id?: string;  // When set, billing is owned by an umbrella reservation
 }
 
 export interface UpdateImplicitResponse {
@@ -341,6 +322,8 @@ export async function sendUpdateImplicit(
                 if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
                     try { resolve(JSON.parse(data) as UpdateImplicitResponse); }
                     catch { resolve({ success: true, message: data }); }
+                } else if (res.statusCode === 402) {
+                    reject(new Error(parseInsufficientCreditsMessage(data)));
                 } else {
                     reject(new Error(data || `HTTP ${res.statusCode}`));
                 }
@@ -365,6 +348,9 @@ export interface UpdateWikiPayload {
     project_id: string;
     files: UpdateWikiFile[];
     branch?: string;  // user's branch to update
+    current_commit?: string;  // git HEAD SHA; eliminates A1 proxy call on the server
+    changes?: { added: string[]; modified: string[]; deleted: string[] };  // Scopes billing to changed files when present
+    umbrella_id?: string;  // When set, billing is owned by an umbrella reservation
 }
 
 export interface UpdateWikiStats {
@@ -434,6 +420,10 @@ export async function sendUpdateWiki(
             res.on('data', (chunk: string) => chunks.push(chunk));
             res.on('end', () => {
                 const text = chunks.join('');
+                if (res.statusCode === 402) {
+                    reject(new Error(parseInsufficientCreditsMessage(text)));
+                    return;
+                }
                 if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
                     reject(new Error(text || `HTTP ${res.statusCode}`));
                     return;
@@ -466,6 +456,8 @@ export async function sendUpdateWiki(
 export interface UpdateFileIndexPayload {
     project_id: string;
     branch?: string;
+    current_commit?: string;  // git HEAD SHA; eliminates A1 proxy call on the server
+    umbrella_id?: string;  // When set, billing is owned by an umbrella reservation
 }
 
 export interface UpdateFileIndexStats {
@@ -527,6 +519,10 @@ export async function sendUpdateFileIndex(
             res.on('data', (chunk: string) => chunks.push(chunk));
             res.on('end', () => {
                 const text = chunks.join('');
+                if (res.statusCode === 402) {
+                    reject(new Error(parseInsufficientCreditsMessage(text)));
+                    return;
+                }
                 if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
                     reject(new Error(text || `HTTP ${res.statusCode}`));
                     return;
@@ -547,6 +543,82 @@ export async function sendUpdateFileIndex(
         req.write(body);
         req.end();
     });
+}
+
+// ─── update umbrella (one charge for the whole `lgraph update`) ─────────────
+
+export interface UpdateBeginPayload {
+    project_id: string;
+    branch?: string;
+    loc: number;  // Changed-files LOC (added + modified)
+    // Client-generated uuid per `lgraph update` invocation. Server returns
+    // the existing reservation if this key matches a still-open umbrella
+    // (safe retry on transient network failure).
+    idempotency_key?: string;
+}
+
+export interface UpdateBeginResponse {
+    umbrella_id: string;
+    credits_reserved: number;
+    loc: number;
+    // True when the server returned an existing reservation matched by
+    // idempotency_key rather than creating a new one.
+    idempotent_replay?: boolean;
+}
+
+export interface UpdateFinalizePayload {
+    project_id: string;
+    umbrella_id: string;
+    status: 'success' | 'failed';
+    loc?: number;
+}
+
+export interface UpdateFinalizeResponse {
+    success: boolean;
+    noop?: boolean;
+    credits_consumed?: number;
+    credits_refunded?: number;
+}
+
+export async function sendUpdateBegin(
+    apiKey: string,
+    payload: UpdateBeginPayload,
+): Promise<UpdateBeginResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/mcp/update-begin`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        const text = await response.text();
+        if (response.status === 402) {
+            throw new Error(parseInsufficientCreditsMessage(text));
+        }
+        throw new Error(text || `HTTP ${response.status}`);
+    }
+    return await response.json();
+}
+
+export async function sendUpdateFinalize(
+    apiKey: string,
+    payload: UpdateFinalizePayload,
+): Promise<UpdateFinalizeResponse> {
+    const response = await fetch(`${API_BASE_URL}/api/v1/mcp/update-finalize`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+    });
+    if (!response.ok) {
+        const text = await response.text();
+        throw new Error(text || `HTTP ${response.status}`);
+    }
+    return await response.json();
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -727,6 +799,52 @@ export async function fetchProjectStatus(
                 signal: controller.signal,
             },
         );
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || `HTTP ${response.status}`);
+        }
+
+        return await response.json();
+    } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
+}
+
+// ─── list-files ─────────────────────────────────────────────────────────────
+
+export interface ListFilesResponse {
+    project_id: string;
+    files: string[];
+    total_files: number;
+}
+
+/**
+ * Fetch the list of files currently indexed in the project's DRG.
+ * Used by analyze to display the backend's authoritative file count.
+ */
+export async function fetchListFiles(
+    apiKey: string,
+    projectId: string,
+    branch?: string,
+): Promise<ListFilesResponse> {
+    const controller = new AbortController();
+    // Short timeout: this call is just to enrich the CLI display. If the
+    // backend is slow/unhealthy, we fall back to the local count quickly
+    // instead of blocking the user.
+    const timeoutId = setTimeout(() => controller.abort(), 3_000);
+
+    try {
+        const params = new URLSearchParams({ project_id: projectId });
+        if (branch) params.set('branch', branch);
+        const response = await fetch(`${API_BASE_URL}/api/v1/mcp/list-files?${params}`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${apiKey}` },
+            signal: controller.signal,
+        });
 
         clearTimeout(timeoutId);
 

@@ -15,23 +15,30 @@ const MAX_IMPLICIT_DEPENDENTS = 6;
 export interface FileSummaryPartial {
     module_name?: string;
     modification_impact?: string;
-    dependents?: Array<{ path: string; type?: string[] } | string>;
 }
 
-export interface DependencyEdge {
-    relationship?: string;
-    imports?: string[];
-    strength?: string;
-    dependency_types?: string[];
-    edge_summary?: string;
-    dependency_summary?: string;
+export interface IncomingDependencyEdge {
+    source: string;
     implicit?: boolean;
+    summary?: string;
+    data_flow?: string;
+    imports?: string[];
+}
+
+export interface OutgoingDependencyEdge {
+    target: string;
+    implicit?: boolean;
+    summary?: string;
+    data_flow?: string;
+    imports?: string[];
 }
 
 export interface DependenciesPartial {
     path?: string;
-    dependents?: Array<{ path: string; type?: string[] }>;
-    edge_details?: Record<string, DependencyEdge>;
+    incoming?: IncomingDependencyEdge[];
+    outgoing?: OutgoingDependencyEdge[];
+    learnings?: string[];
+    degraded?: boolean;
 }
 
 export interface BlastRadiusFile {
@@ -68,21 +75,25 @@ function classify(f: BlastRadiusFile): 'explicit' | 'implicit' | 'mixed' {
     return 'explicit';
 }
 
-/** Build the directly-dependent block from the dependencies endpoint. */
+/** Build the directly-dependent block from `incoming[]` on the new
+ * `/api/v1/mcp/dependency` response. `incoming` collapses what the
+ * pre-1.0.29 wire split across `dependents` (paths) and
+ * `edge_details[path]` (summaries) — one row per source carries
+ * `source`, the `implicit` flag, and a per-edge `summary`.
+ *
+ * Mixed targets (reached by both an explicit import AND an implicit
+ * runtime coupling) appear twice — once per `implicit` flag value —
+ * matching the wire-level convention. */
 function formatDirectDependents(deps: DependenciesPartial | null | undefined): string[] {
-    if (!deps?.dependents?.length) return [];
-    const edgeDetails = deps.edge_details ?? {};
+    if (!deps?.incoming?.length) return [];
     const lines: string[] = [];
-    const dependents = deps.dependents.slice(0, MAX_DIRECT_DEPENDENTS);
+    const dependents = deps.incoming.slice(0, MAX_DIRECT_DEPENDENTS);
     for (const d of dependents) {
-        const p = typeof d === 'string' ? d : d.path;
-        const types = typeof d === 'string' ? [] : (d.type ?? []);
-        const typeLabel = types.length ? ` [${types.join(', ')}]` : '';
-        const edge = edgeDetails[p];
-        const summary = edge?.edge_summary || edge?.dependency_summary || '';
-        lines.push(summary ? `- ${p}${typeLabel} — ${summary}` : `- ${p}${typeLabel}`);
+        const typeLabel = d.implicit ? ' [implicit]' : ' [explicit]';
+        const summary = d.summary || '';
+        lines.push(summary ? `- ${d.source}${typeLabel} — ${summary}` : `- ${d.source}${typeLabel}`);
     }
-    const remaining = deps.dependents.length - dependents.length;
+    const remaining = deps.incoming.length - dependents.length;
     if (remaining > 0) lines.push(`- … ${remaining} more not shown`);
     return lines;
 }
@@ -138,7 +149,7 @@ export function formatHookContext(inputs: HookContextInputs): string {
     const directDependents = formatDirectDependents(dependencies);
     if (directDependents.length) {
         lines.push('');
-        lines.push(`**Direct dependents (${dependencies?.dependents?.length ?? directDependents.length}):**`);
+        lines.push(`**Direct dependents (${dependencies?.incoming?.length ?? directDependents.length}):**`);
         lines.push(...directDependents);
     }
 

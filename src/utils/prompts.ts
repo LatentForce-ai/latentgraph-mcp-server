@@ -64,28 +64,6 @@ export async function promptSelectProject(projects: Project[]): Promise<Project>
     return projects[selection - 1];
 }
 
-export type KeyChoice = 'paid' | 'guest';
-
-export async function promptKeyChoice(): Promise<KeyChoice> {
-    console.log('\nNo Latentgraph API key found.');
-    console.log('');
-    console.log('  1. I have an API key');
-    console.log('  2. Continue as guest');
-    console.log('');
-
-    const answer = await prompt('Select an option (1 or 2): ');
-    const selection = parseInt(answer, 10);
-
-    if (selection === 1) {
-        return 'paid';
-    } else if (selection === 2) {
-        return 'guest';
-    } else {
-        console.error('Invalid selection.');
-        process.exit(1);
-    }
-}
-
 export type ProjectAction = 'select' | 'create';
 
 export async function promptCreateOrSelect(): Promise<ProjectAction> {

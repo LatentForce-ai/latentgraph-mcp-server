@@ -6,7 +6,8 @@ import { readProjectConfig, writeProjectConfig, isReadOnlyProject } from '../../
 import { sendUpdateImplicit } from '../../utils/api-client.js';
 import { pollProjectStatus } from '../../utils/poll-project-status.js';
 import { resolveApiKey } from '../../utils/auth-resolver.js';
-import { getProjectTree, categorizeFiles } from '../../utils/tree-scanner.js';
+import { getProjectTree, categorizeFiles, extractAllFilePaths } from '../../utils/tree-scanner.js';
+import { enforceLanguageSupport } from '../../utils/language-support.js';
 import { detectGitChanges } from '../../utils/git-changes.js';
 
 const execAsync = promisify(exec);
@@ -56,6 +57,10 @@ export async function updateImplicitCommand(): Promise<void> {
     const treeData = await getProjectTree(projectRoot, { depth: 0 });
     const categorized = categorizeFiles(treeData.tree);
 
+    // Language-support gate: block (exit 1) when >50% of recognized code files
+    // are in unsupported languages; warn and continue when some but <=50% are.
+    enforceLanguageSupport(extractAllFilePaths(treeData.tree), 'Implicit');
+
     const MAX_FILE_SIZE_CHARS = 300_000;
     const filesToSend: { file_path: string; content: string }[] = [];
 
@@ -80,17 +85,16 @@ export async function updateImplicitCommand(): Promise<void> {
     console.log(`[Implicit] ✓ ${filesToSend.length} source file(s) ready to send\n`);
 
     // Step 4: Detect git changes since the last successful implicit run.
-    // Mirrors update-drg / update-file-index: committed diff since
-    // `implicit_last_indexed_commit` PLUS uncommitted working-tree changes.
-    // First run on a project has no tracker yet — uncommitted only, server
-    // will fall back to a full scan if the resulting ratio breaches the
-    // threshold.
+    // Mirrors update-drg: committed diff (sinceCommit..HEAD) only — no
+    // working-tree scan — so every update pipeline sees the same change set.
+    // First run on a project has no tracker yet; the server then compares
+    // against the last analyzed commit / falls back to a full scan.
     console.log('[Implicit] Step 4/4: Detecting git changes...');
     const sinceCommit = projectConfig.implicit_last_indexed_commit;
     if (sinceCommit) {
         console.log(`[Implicit] Diffing from last indexed commit: ${sinceCommit.slice(0, 8)}`);
     } else {
-        console.log('[Implicit] No baseline commit stored — uncommitted changes only');
+        console.log('[Implicit] No baseline commit stored — server will compare against last analyzed commit');
     }
     const changes = await detectGitChanges(projectRoot, sinceCommit);
     const totalChanges = changes.added.length + changes.modified.length + changes.deleted.length;
@@ -117,6 +121,7 @@ export async function updateImplicitCommand(): Promise<void> {
             changes,
             files: filesToSend,
             branch,
+            umbrella_id: process.env.LGRAPH_UMBRELLA_ID || undefined,
         });
         console.log(`\n${response.message}`);
     } catch (error) {

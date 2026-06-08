@@ -1,4 +1,4 @@
-import { getApiKey, readProjectConfig, isGuestKey } from '../../utils/config.js';
+import { getApiKey, readProjectConfig } from '../../utils/config.js';
 import { getDaemonStatus } from '../../daemon/daemon-manager.js';
 import { fetchProjectStatus, ProjectStatusResponse } from '../../utils/api-client.js';
 import {
@@ -193,11 +193,7 @@ export async function statusCommand(): Promise<void> {
         console.log('\nRun "lgraph start" to configure your API key.\n');
         return;
     }
-    if (isGuestKey()) {
-        console.log('API Key:     ✓ Guest key');
-    } else {
-        console.log('API Key:     ✓ Configured');
-    }
+    console.log('API Key:     ✓ Configured');
 
     // Check project config
     if (!projectConfig?.project_id) {

@@ -220,35 +220,35 @@ function normalizeBackendPath(filePath, cwd) {
     return p;
 }
 
-function formatFileContext(data) {
+function formatFileContext(fileData, depsData) {
     const lines = [];
-    lines.push('[Latentgraph] File: ' + (data.path || '') + (data.module_name ? ' | Module: ' + data.module_name : ''));
+    lines.push('[Latentgraph] File: ' + (fileData.path || '') + (fileData.module_name ? ' | Module: ' + fileData.module_name : ''));
 
-    if (data.summary) {
-        lines.push('Summary: ' + data.summary);
+    if (fileData.summary) {
+        lines.push('Summary: ' + fileData.summary);
     }
 
-    const implicits = (data.implicit_dependencies_preview || [])
-        .filter(function(dep) { return dep && dep.strength === 'tight'; })
+    // Post-redesign: implicit couplings live on outgoing[] with implicit:true.
+    // No coupling_type/mechanism/strength on the new wire — summary carries
+    // the equivalent semantic in one field.
+    const implicits = ((depsData && depsData.outgoing) || [])
+        .filter(function(edge) { return edge && edge.implicit === true; })
         .slice(0, 5);
 
     if (implicits.length > 0) {
-        lines.push('Tight implicit couplings:');
-        for (const dep of implicits) {
-            lines.push('- ' + dep.path);
-            if (dep.coupling_type) lines.push('  coupling_type: ' + dep.coupling_type);
-            if (dep.coupling_mechanism) lines.push('  coupling_mechanism: ' + dep.coupling_mechanism);
-            if (dep.strength) lines.push('  strength: ' + dep.strength);
-            if (dep.dependency_types) lines.push('  dependency_types: ' + (Array.isArray(dep.dependency_types) ? dep.dependency_types.join(', ') : dep.dependency_types));
-            if (dep.edge_summary) lines.push('  edge_summary: ' + dep.edge_summary);
+        lines.push('Implicit couplings (outgoing):');
+        for (const edge of implicits) {
+            lines.push('- ' + edge.target);
+            if (edge.summary) lines.push('  summary: ' + edge.summary);
+            if (edge.data_flow) lines.push('  data_flow: ' + edge.data_flow);
         }
     }
 
-    const dependents = (data.dependents || []).slice(0, 5);
+    const dependents = ((depsData && depsData.incoming) || []).slice(0, 5);
     if (dependents.length > 0) {
         lines.push('Dependents:');
         for (const dep of dependents) {
-            lines.push('- ' + dep);
+            lines.push('- ' + dep.source);
         }
     }
 
@@ -264,26 +264,43 @@ async function fetchFileContext(filePath, cwd) {
         const controller = new AbortController();
         const timeout = setTimeout(function() { controller.abort(); }, 7000);
 
-        const response = await fetch(config.apiUrl + '/api/v1/mcp/what-is-this-file', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + config.apiKey,
-            },
-            body: JSON.stringify({
-                path: normalized,
-                project_id: config.projectId,
-                level: 0,
+        const baseHeaders = {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + config.apiKey,
+        };
+
+        // Two endpoints — /what-is-this-file no longer carries implicit
+        // couplings or dependents (moved to /dependency in the 9-tool
+        // redesign). Fire in parallel to keep latency at single-call cost.
+        const [fileResp, depsResp] = await Promise.all([
+            fetch(config.apiUrl + '/api/v1/mcp/what-is-this-file', {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                    path: normalized,
+                    project_id: config.projectId,
+                    level: 0,
+                }),
+                signal: controller.signal,
             }),
-            signal: controller.signal,
-        });
+            fetch(config.apiUrl + '/api/v1/mcp/dependency', {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({
+                    path: normalized,
+                    project_id: config.projectId,
+                }),
+                signal: controller.signal,
+            }),
+        ]);
 
         clearTimeout(timeout);
 
-        if (!response.ok) return null;
+        if (!fileResp.ok) return null;
 
-        const data = await response.json();
-        return formatFileContext(data);
+        const fileData = await fileResp.json();
+        const depsData = depsResp.ok ? await depsResp.json() : null;
+        return formatFileContext(fileData, depsData);
     } catch {
         return null;
     }
@@ -384,17 +401,17 @@ async function main() {
             suggestion =
                 '[Latentgraph] You are searching for dependency patterns. ' +
                 'Use mcp__lgraph__get_dependencies instead — it returns the bidirectional graph ' +
-                'with relationship types, imported names, reverse deps, dependency summaries, ' +
-                'and implicit coupling strength. Use mcp__lgraph__get_change_impact for downstream impact.';
+                'with imported names, dependency summaries, and implicit coupling. ' +
+                'Read \`incoming\` for the downstream blast radius (who depends on this file).';
             const targetPath = paths.find(p => isSourceFile(p)) || paths[0] || toolArgs.pattern || toolArgs.query || '';
             dedupeKey = 'search:' + normalizeFilePath(String(targetPath));
         } else if (hasSourceTarget) {
             suggestion =
                 '[Latentgraph] Before searching indexed source files, consider:\\n' +
-                '  - mcp__lgraph__get_context(targets=["project"]) — architecture summary and top-level modules\\n' +
-                '  - mcp__lgraph__get_context(targets=["project"], depth=-1, include_files=true) — logical modules and owning files\\n' +
+                '  - mcp__lgraph__get_project_overview() — architecture summary and top-level modules\\n' +
+                '  - mcp__lgraph__get_module_info(module_path="X") — files and child modules for a specific module\\n' +
                 '  - mcp__lgraph__get_file — file summary, symbols, endpoints, dependents\\n' +
-                '  - mcp__lgraph__get_dependencies — bidirectional relationships, imports, coupling';
+                '  - mcp__lgraph__get_dependencies — bidirectional relationships, imports, coupling (\`incoming\` = blast radius)';
             const targetPath = paths.find(p => isSourceFile(p)) || '';
             dedupeKey = 'search:' + normalizeFilePath(targetPath);
         }
@@ -402,16 +419,16 @@ async function main() {
         if (isTerminalDependencySearch(toolArgs)) {
             suggestion =
                 '[Latentgraph] You are running a dependency search in the terminal. ' +
-                'Use mcp__lgraph__get_dependencies for relationship tracing and ' +
-                'mcp__lgraph__get_change_impact for downstream impact instead.';
+                'Use mcp__lgraph__get_dependencies for bidirectional relationship tracing — ' +
+                'read \`incoming\` for the downstream blast radius (who depends on this file).';
             dedupeKey = 'terminal:' + normalizeFilePath(String(toolArgs.command || toolArgs.cmd || toolArgs.input || ''));
         } else if (isTerminalSearch(toolArgs)) {
             suggestion =
                 '[Latentgraph] You are running a source-code search. Consider using MCP first:\\n' +
-                '  - mcp__lgraph__get_context(targets=["project"]) for navigation\\n' +
-                '  - mcp__lgraph__get_dependencies for bidirectional relationships, imports, coupling\\n' +
-                '  - mcp__lgraph__get_change_impact for downstream blast radius\\n' +
-                '  - mcp__lgraph__get_file for file summary, symbols, endpoints, dependents';
+                '  - mcp__lgraph__get_project_overview() for navigation and architecture\\n' +
+                '  - mcp__lgraph__get_symbol(name="X") to locate a definition by name\\n' +
+                '  - mcp__lgraph__get_dependencies for relationships and coupling (\`incoming\` = blast radius)\\n' +
+                '  - mcp__lgraph__get_file for one file\\'s metadata';
             dedupeKey = 'terminal:' + normalizeFilePath(String(toolArgs.command || toolArgs.cmd || toolArgs.input || ''));
         }
     }

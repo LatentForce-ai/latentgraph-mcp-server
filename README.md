@@ -6,7 +6,7 @@
 
 AI-powered code intelligence CLI and MCP server.
 
-Latentgraph indexes your codebase, builds a dependency relationship graph (DRG), and provides AI-powered insights via MCP tools — enabling AI coding assistants to understand your project's structure, dependencies, and blast radius of changes.
+Latentgraph indexes your codebase, builds a dependency relationship graph (DRG), and provides AI-powered insights via MCP tools - enabling AI coding assistants to understand your project's structure, dependencies, and blast radius of changes.
 
 ---
 
@@ -90,7 +90,7 @@ lgraph status   # Step 3: Verify everything is connected
 
 When you run `lgraph start` interactively, it will:
 
-1. **Ask for your API key** — paste the key from your dashboard, or choose guest mode
+1. **Ask for your API key** — paste the key from your dashboard
 2. **Ask to create or select a project** — you can either:
    - Select an existing project from your account
    - Create a new project directly from the CLI (prompts for a name and migration template)
@@ -131,7 +131,7 @@ Resolves authentication, configures the project, and launches a background daemo
 
 **Interactive flow (no flags):**
 
-1. Prompts for your API key or guest mode
+1. Prompts for your API key
 2. Prompts to select an existing project or create a new one
    - If creating: asks for a project name and lets you pick a migration template
 3. Saves config to `.lgraph/config.json`
@@ -139,7 +139,6 @@ Resolves authentication, configures the project, and launches a background daemo
 
 | Flag | Short | Description |
 |---|---|---|
-| `--guest` | | Use guest authentication (auto-creates a temporary project) |
 | `--api-key <key>` | `-k` | Provide API key directly (skips the key prompt) |
 | `--project-name <name>` | `-n` | Create new project or match existing by name |
 | `--project-id <id>` | | Use existing project UUID |
@@ -147,7 +146,6 @@ Resolves authentication, configures the project, and launches a background daemo
 
 ```bash
 lgraph start                                    # Interactive setup
-lgraph start --guest                            # Quick start without API key
 lgraph start -k <key> -n "My App"               # Non-interactive
 lgraph start -k <key> --gh-token ghp_...        # Set API key and GitHub token at once
 ```
@@ -163,7 +161,6 @@ If the project is already indexed, you will be prompted to re-index. Use `--forc
 | Flag | Short | Description |
 |---|---|---|
 | `--force` | `-f` | Force re-indexing even if already indexed |
-| `--guest` | | Use guest authentication |
 | `--api-key <key>` | `-k` | Provide API key directly |
 | `--project-name <name>` | `-n` | Create new project or match existing by name |
 | `--project-id <id>` | | Use existing project UUID |
@@ -172,7 +169,6 @@ If the project is already indexed, you will be prompted to re-index. Use `--forc
 ```bash
 lgraph init                                      # Interactive initialization
 lgraph init -f                                   # Force re-index without prompt
-lgraph init --guest                              # Quick init with guest auth
 lgraph init -k <key> -n "My App"                 # Non-interactive
 lgraph init -k <key> --gh-token ghp_...          # Set API key and GitHub token at once
 ```
@@ -492,28 +488,21 @@ The file is a JSON array. Each entry has:
 
 ## MCP Tools
 
+The MCP server exposes **9 tools** over the indexed graph — 8 read tools and one write tool (`update_graph`). Each read tool returns curated metadata (summaries, symbols, edges, recorded knowledge) drawn from the index rather than raw source.
+
 | Tool | Description |
 |---|---|
-| `get_context` | **Default first call** for any artifact. Pass `targets=['project']` for architecture summary + module tree, a file path for file/module context, or a symbol for callers/callees |
-| `get_file` | AI-generated summary of a source file: exports, key functions, imports, API endpoints, module role, and modification impact |
-| `get_dependencies` | Bidirectional file dependencies — what a file depends on and what depends on it, with relationship types, imported names, and edge summaries |
-| `get_change_impact` | Every file that imports or depends on a given file, grouped by dependency depth, with affected modules |
-| `get_design_knowledge` | PR-mined invariants and architectural decisions for a file or module |
-| `get_call_chain` | Callers and callees for a specific symbol, with confidence scores |
-| `get_symbol` | Locate a function/class/method by name across the project |
-| `get_dependency_path` | Shortest path connecting two files through the dependency graph |
-| `search_codebase` | Topic-based discovery across file summaries, module wiki, and PR knowledge |
-| `ask_codebase` | Natural language questions answered with RAG over the indexed codebase |
-| `update_graph` | Record AI-discovered insights into the DRG/CodeWiki (queued for owner approval) |
+| `get_project_overview` | Returns the project's architecture summary, a design/conventions overview document, and the list of top-level modules with each module's path, summary, and file count. Takes no arguments. |
+| `get_module_info` | Returns one module's summary, full narrative text, the file paths it contains, its nested child-module ids, and any curated notes recorded for it. |
+| `get_file` | Returns one source file's metadata: summary, owning module, category and modification-impact tags, defined symbols (each with its `fqn`), exports, internal imports, declared constants, served API endpoints, and storage backends touched. |
+| `get_dependencies` | Returns file-level dependency edges for one file — `outgoing` (files it depends on) and `incoming` (files that depend on it) — each with an explicit/implicit flag, imported names, an edge summary, and a data-flow note. |
+| `get_call_chain` | Returns the call graph around a fully-qualified symbol — its callers and callees — with confidence scores, resolution kind, depth level, and warnings for uncertain or polymorphic resolution. |
+| `get_symbol` | Locates symbol definitions by name and/or file-path prefix, optionally filtered by kind. Returns each match's kind, file path, signature, and `fqn`. |
+| `get_pr_insights` | Returns recorded design knowledge for a file or module: invariants (rules with severity and PR grounding) and decisions (choices with tradeoffs and PR grounding). |
+| `ask_codebase` | Answers a natural-language question about the codebase using retrieval over indexed summaries. Returns prose with file-path citations, a confidence level, and fallback targets. |
+| `update_graph` | The single write tool. Records a proposed graph edit — a file, dependency, or module annotation, or adding/removing an explicit or implicit dependency edge. Edits are queued for owner approval; returns a `pending_edit_id`. |
 
-Each tool accepts an optional `project_id` parameter. If omitted, it falls back to the `LGRAPH_PROJECT_ID` environment variable.
-
-**Recommended call order:**
-
-1. `get_context(targets=['project'])` — understand the overall structure
-2. `get_context(targets=['<file-or-module>'])` — learn a subsystem before editing
-3. `get_file` — inspect a specific file
-4. `get_dependencies` + `get_change_impact` — before any edit or refactor
+Every tool accepts an optional `project_id` (falls back to `LGRAPH_PROJECT_ID`) and an optional `branch` (falls back to `LGRAPH_BRANCH`, then the project's configured `default_branch`). Read tools return their payload as a fenced ` ```toon ` block ([TOON](https://github.com/toon-format/toon) — a compact, tab-delimited JSON encoding); `update_graph` returns a plain-text receipt.
 
 ---
 
@@ -531,7 +520,7 @@ Each tool accepts an optional `project_id` parameter. If omitted, it falls back 
 
 - **Node.js:** 18 or newer
 - **npm:** 8 or newer (bundled with Node.js)
-- A free API key from [latentgraph.latentforce.ai](https://latentgraph.latentforce.ai/auth) (or use `--guest` mode for a quick try)
+- A free API key from [latentgraph.latentforce.ai](https://latentgraph.latentforce.ai/auth)
 
 ---
 
@@ -553,4 +542,4 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get
 
 ## License
 
-MIT - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).

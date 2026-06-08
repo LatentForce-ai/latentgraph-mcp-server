@@ -6,7 +6,8 @@ import { readProjectConfig, writeProjectConfig, isPublicProject, getUserBranch }
 import { sendUpdateDrg, type DrgUpdateLangStatus } from '../../utils/api-client.js';
 import { pollProjectStatus } from '../../utils/poll-project-status.js';
 import { resolveApiKey } from '../../utils/auth-resolver.js';
-import { getProjectTree, categorizeFiles } from '../../utils/tree-scanner.js';
+import { getProjectTree, categorizeFiles, extractAllFilePaths } from '../../utils/tree-scanner.js';
+import { enforceLanguageSupport } from '../../utils/language-support.js';
 import { detectGitChanges } from '../../utils/git-changes.js';
 
 const execAsync = promisify(exec);
@@ -74,6 +75,11 @@ export async function updateDrgCommand(options: UpdateDrgOptions = {}): Promise<
     console.log(`[UpdateDRG] Project: ${projectId}`);
     console.log(`[UpdateDRG] Branch: ${userBranch}`);
 
+    // Language-support gate: block (exit 1) when >50% of recognized code files
+    // are in unsupported languages; warn and continue when some but <=50% are.
+    const gateTree = await getProjectTree(projectRoot, { depth: 0 });
+    enforceLanguageSupport(extractAllFilePaths(gateTree.tree), 'UpdateDRG');
+
     // Step 3: Read language(s) from scan_target.json, auto-detect if missing.
     // Multi-language projects (e.g. C++ + Kotlin) get one backend call per language
     // so every language's changed files reach the LLM extractor.
@@ -135,7 +141,7 @@ export async function updateDrgCommand(options: UpdateDrgOptions = {}): Promise<
         if (sinceCommit) {
             console.log(`[UpdateDRG] Diffing from last indexed commit: ${sinceCommit.slice(0, 8)}`);
         } else {
-            console.log('[UpdateDRG] No baseline commit stored — diffing uncommitted changes only');
+            console.log('[UpdateDRG] No baseline commit stored — nothing to diff (run "lgraph init" first)');
         }
         changes = await detectGitChanges(projectRoot, sinceCommit);
         const { added, modified, deleted } = changes;
@@ -316,6 +322,7 @@ export async function updateDrgCommand(options: UpdateDrgOptions = {}): Promise<
             changes: runChanges,
             files: runFiles,
             branch: userBranch,
+            umbrella_id: process.env.LGRAPH_UMBRELLA_ID || undefined,
         }), lang);
         return await pollDrgUntilDone(lang);
     }

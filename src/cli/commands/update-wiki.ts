@@ -1,9 +1,15 @@
 import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync } from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import path from 'path';
 import { readProjectConfig, isReadOnlyProject } from '../../utils/config.js';
 import { sendUpdateWiki } from '../../utils/api-client.js';
 import { resolveApiKey } from '../../utils/auth-resolver.js';
-import { getProjectTree, categorizeFiles } from '../../utils/tree-scanner.js';
+import { getProjectTree, categorizeFiles, extractAllFilePaths } from '../../utils/tree-scanner.js';
+import { detectGitChanges } from '../../utils/git-changes.js';
+import { enforceLanguageSupport } from '../../utils/language-support.js';
+
+const execAsync = promisify(exec);
 
 export interface UpdateWikiOptions {
     // reserved for future flags (e.g. --force-full)
@@ -58,6 +64,10 @@ export async function updateWikiCommand(_options: UpdateWikiOptions = {}): Promi
     const treeData = await getProjectTree(projectRoot, { depth: 0 });
     const categorized = categorizeFiles(treeData.tree);
 
+    // Language-support gate: block (exit 1) when >50% of recognized code files
+    // are in unsupported languages; warn and continue when some but <=50% are.
+    enforceLanguageSupport(extractAllFilePaths(treeData.tree), 'UpdateWiki');
+
     const MAX_FILE_SIZE_CHARS = 300_000;
     const filesToSend: { file_path: string; content: string }[] = [];
     const sourceFiles = categorized.source_files;
@@ -92,11 +102,37 @@ export async function updateWikiCommand(_options: UpdateWikiOptions = {}): Promi
         console.error('\n❌ No branch configured in .lgraph/config.json — run "lgraph init" first.\n');
         process.exit(1);
     }
+
+    // Include current HEAD so the server can skip the A1 proxy git call.
+    let currentCommit: string | undefined;
+    try {
+        const { stdout } = await execAsync('git rev-parse HEAD', { cwd: projectRoot });
+        currentCommit = stdout.trim() || undefined;
+    } catch { /* not a git repo — server falls back to A1 proxy */ }
+
+    // Compute git delta hint so the server scopes billing to changed files
+    // (mirrors update-drg / update-implicit). Without this hint the server
+    // falls back to charging the full project LOC. Inside `lgraph update`
+    // the umbrella owns billing and this hint is informational; standalone
+    // `lgraph update-wiki` runs depend on it for correct charges.
+    let changes: { added: string[]; modified: string[]; deleted: string[] } | undefined;
+    const sinceCommit =
+        projectConfig.implicit_last_indexed_commit
+        ?? projectConfig.drg_last_indexed_commit;
+    if (sinceCommit) {
+        try {
+            changes = await detectGitChanges(projectRoot, sinceCommit);
+        } catch { /* git unavailable — server falls back to full LOC */ }
+    }
+
     try {
         const result = await sendUpdateWiki(apiKey, {
             project_id: projectId,
             files: filesToSend,
             branch,
+            current_commit: currentCommit,
+            changes,
+            umbrella_id: process.env.LGRAPH_UMBRELLA_ID || undefined,
         });
 
         if (result.success) {

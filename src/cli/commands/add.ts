@@ -1,4 +1,4 @@
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -11,7 +11,7 @@ import { setupLatentCodeIntegration } from '../../integration/latent-code/index.
 import { setupOpencodeIntegration } from '../../integration/opencode/index.js';
 import { setupCursorIntegration } from '../../integration/cursor/index.js';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const SUPPORTED_TOOLS = ['latentcode', 'claude-code', 'latent-code', 'opencode', 'codex', 'copilot', 'droid', 'kiro', 'cursor'] as const;
 type Tool = typeof SUPPORTED_TOOLS[number];
@@ -19,6 +19,7 @@ type Tool = typeof SUPPORTED_TOOLS[number];
 interface ExecError extends Error {
     code?: string | number;
     stderr?: string;
+    stdout?: string;
 }
 
 function isNotFound(e: ExecError): boolean {
@@ -26,17 +27,9 @@ function isNotFound(e: ExecError): boolean {
 }
 
 function getStderr(e: ExecError): string {
-    return (e.stderr || e.message || '').trim();
+    return (e.stderr || e.stdout || e.message || '').trim();
 }
 
-function shellEscape(arg: string): string {
-    if (/^[a-zA-Z0-9._\-=/]+$/.test(arg)) return arg;
-    return `'${arg.replace(/'/g, "'\\''")}'`;
-}
-
-function buildCommand(bin: string, args: string[]): string {
-    return [bin, ...args.map(shellEscape)].join(' ');
-}
 
 function getMcpEnv(projectId: string): Record<string, string> {
     const urls = getConfiguredUrls();
@@ -73,23 +66,25 @@ async function addClaudeCode(projectId: string, projectRoot: string, yes: boolea
     });
 
     try {
-        await execAsync(buildCommand('claude', ['mcp', 'add-json', 'lgraph', jsonPayload]));
+        await execFileAsync('claude', ['mcp', 'add-json', 'lgraph', jsonPayload]);
         console.log('  Added Latentgraph MCP server to Claude Code.');
         console.log('\n  Verify with: claude mcp list');
     } catch (e) {
         const err = e as ExecError;
         const stderr = getStderr(err);
+        const manualCmd = `claude mcp add-json lgraph '${jsonPayload}'`;
+        const shellNote = process.platform === 'win32' ? '\n  (Run in PowerShell, not cmd.exe)' : '';
 
         if (/already exists/.test(stderr)) {
             console.log('  Latentgraph MCP server is already configured in Claude Code.');
             console.log('  To update, remove it first: claude mcp remove lgraph');
         } else if (isNotFound(err)) {
             console.log('  "claude" CLI not found. Add manually:\n');
-            console.log(`  claude mcp add-json lgraph '${jsonPayload}'`);
+            console.log(`  ${manualCmd}${shellNote}`);
         } else {
             console.log(`  Failed: ${stderr}`);
             console.log('\n  Try adding manually:\n');
-            console.log(`  claude mcp add-json lgraph '${jsonPayload}'`);
+            console.log(`  ${manualCmd}${shellNote}`);
         }
     }
 
@@ -109,7 +104,7 @@ async function addCodex(projectId: string, projectRoot: string, yes: boolean): P
     const manualCmd = `codex ${args.join(' ')}`;
 
     try {
-        await execAsync(buildCommand('codex', args));
+        await execFileAsync('codex', args, { shell: true });
         console.log('  Added Latentgraph MCP server to Codex.');
         console.log('\n  Verify with: codex mcp list');
     } catch (e) {
@@ -145,7 +140,7 @@ async function addFactoryDroid(projectId: string): Promise<void> {
     const manualCmd = `droid ${args.join(' ')}`;
 
     try {
-        await execAsync(buildCommand('droid', args));
+        await execFileAsync('droid', args, { shell: true });
         console.log('  Added Latentgraph MCP server to Factory Droid.');
         console.log('\n  Verify: type /mcp within droid to see configured servers');
     } catch (e) {

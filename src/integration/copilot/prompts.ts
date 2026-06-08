@@ -30,34 +30,31 @@ This project has **Latentgraph** configured — a DRG plus module documentation 
 ## Workflow
 
 \`\`\`
-1. mcp__lgraph__get_context(targets=["project"])              → Architecture summary and top-level modules
-2. mcp__lgraph__get_context(targets=["project"], depth=-1, include_files=true)  → Discover logical modules and owning files
-3. mcp__lgraph__get_context(targets=["..."])                 → Module docs, key files, and context
-4. mcp__lgraph__get_file({file_path: "..."})                 → File summary, symbols, endpoints, dependents
-5. mcp__lgraph__get_dependencies({file_path: "..."})         → Bidirectional relationships, imports, coupling
-6. mcp__lgraph__get_change_impact({file_path: "..."})        → Downstream blast radius
+1. mcp__lgraph__get_project_overview()                          → Architecture summary and top-level modules
+2. mcp__lgraph__get_module_info(module_path="...")              → Module docs, files, child modules
+3. mcp__lgraph__get_file(file_path="...")                       → File summary, symbols, endpoints, dependents
+4. mcp__lgraph__get_symbol(name="...")                          → Locate a function/class/method by name
+5. mcp__lgraph__get_call_chain(symbol="<fqn>")                  → Callers and callees for a specific symbol
+6. mcp__lgraph__get_dependencies(file_path="...")               → Bidirectional file-level dependencies (incoming = blast radius, outgoing = what it relies on)
 \`\`\`
 
 If you need broader context from \`get_file\`, use \`level=1\` or \`level=2\` for module ancestry and surrounding architecture.
 
-Important: \`mcp__lgraph__get_context\` accepts a \`targets\` array. Pass a file path or module name as the target.
-
 ## Checklist
 
-- [ ] Call \`get_context(targets=["project"])\` first for the big picture
-- [ ] Call \`get_context(targets=["project"], depth=-1, include_files=true)\` to locate the right subsystem
-- [ ] Call \`get_context\` on a module before treating a folder as a module boundary
+- [ ] Call \`get_project_overview()\` first for the big picture
+- [ ] Call \`get_module_info(module_path="...")\` to drill into the right subsystem
 - [ ] Call \`get_file\` on key entry or integration files
-- [ ] Call \`get_dependencies\` on central files to understand relationships
-- [ ] Call \`get_change_impact\` when the user asks "what uses this?" or "what depends on this?"
+- [ ] Call \`get_dependencies\` on central files; read \`incoming\` for dependents and \`outgoing\` for what they rely on
+- [ ] Call \`get_call_chain\` when the question is about a specific function or method
 - [ ] Only read raw files if the implementation details matter beyond the summaries
 
 ## Critical Rules
 
 - **NEVER** answer a repo-wide architecture question from a single \`get_file\`.
 - **NEVER** use search or glob as the first step for indexed source-file exploration.
-- Use \`get_context\` when the question is really about a subsystem, not a single file.
-- Use \`get_change_impact\` for "what calls this?" and \`get_dependencies\` for "what does this rely on?".
+- Use \`get_module_info\` when the question is really about a subsystem, not a single file.
+- Use \`get_dependencies\` for both "what calls this?" (read \`incoming\`) and "what does this rely on?" (read \`outgoing\`).
 `;
 
 const PROMPT_EDITING = `---
@@ -80,94 +77,37 @@ This project has **Latentgraph** configured — a DRG plus module documentation 
 ## Workflow
 
 \`\`\`
-1. mcp__lgraph__get_file({file_path: "target"})           → File summary, symbols, endpoints, dependents
-2. mcp__lgraph__get_dependencies({file_path: "target"})   → Bidirectional relationships, imports, coupling
-3. mcp__lgraph__get_change_impact({file_path: "target"})  → Downstream blast radius
-4. mcp__lgraph__get_context(targets=["target"])           → Module docs, key files, and context
+1. mcp__lgraph__get_file(file_path="target")              → File summary, symbols, endpoints, dependents
+2. mcp__lgraph__get_dependencies(file_path="target")      → Bidirectional dependencies (incoming = blast radius, outgoing = what it relies on)
+3. mcp__lgraph__get_pr_insights(target="target")          → PR-mined invariants and decisions you must not break
+4. mcp__lgraph__get_call_chain(symbol="target::<symbol>") → Function-scope: callers/callees for the symbol you're touching
 5. Read the exact code sections you need
 6. Make the edit
-7. Verify the directly affected files from get_change_impact
+7. Re-check the \`incoming\` list from get_dependencies — those files depend on what you just changed
 \`\`\`
 
 ## Checklist
 
 - [ ] Call \`get_file\` before reading the file
 - [ ] Review the summary and module assignment
-- [ ] Call \`get_dependencies\` before changing imports, contracts, or shared helpers
-- [ ] Call \`get_change_impact\` before every non-trivial edit
-- [ ] Call \`get_context\` when the file sits in a shared module
+- [ ] Call \`get_dependencies\` before changing imports, contracts, or shared helpers — \`incoming\` is your blast radius
+- [ ] Call \`get_pr_insights\` before every non-trivial edit
+- [ ] Call \`get_call_chain\` when you're changing a single function's contract
 - [ ] Read only the implementation you need
-- [ ] Re-check directly affected files after the edit
+- [ ] Re-check the \`incoming\` list after the edit
 
 ## Critical Rules
 
-- **ALWAYS** call \`get_change_impact\` before editing indexed source files.
+- **ALWAYS** call \`get_dependencies\` (read \`incoming\`) before editing indexed source files.
 - **ALWAYS** call \`get_file\` before reading the raw file.
 - **NEVER** use search to find importers or dependents as your first step.
-- Use \`get_context\` for module-wide refactors, not just \`get_file\`.
+- Use \`get_module_info\` for module-wide refactors, not just \`get_file\`.
 
 ## Reading the Signals
 
 - \`get_file\` gives you file summary, symbols, endpoints, dependents.
-- \`get_dependencies\` tells you not just imports, but relationship type, imported names, reverse deps, and implicit coupling strength.
-- \`get_change_impact\` is your safety check before edits and refactors.
-`;
-
-const PROMPT_IMPACT = `---
-mode: agent
-description: "Use when the user wants to know what will break if they change something, needs safety analysis before editing, or asks about dependents and coupling. Examples: \"What depends on this?\", \"What will break?\", \"Is this safe to change?\""
----
-
-# Impact Analysis with Latentgraph
-
-This project has **Latentgraph** configured — a DRG plus module documentation for the codebase. Use \`get_change_impact\`, \`get_dependencies\`, and \`get_context\` to assess change impact.
-
-## When to Use
-
-- "What depends on this?"
-- "What will break if I change X?"
-- "Is this safe to refactor?"
-- "Show me the blast radius"
-- Before major edits or risky refactors
-
-## Workflow
-
-\`\`\`
-1. mcp__lgraph__get_change_impact({file_path: "target"})  → Downstream blast radius
-2. mcp__lgraph__get_dependencies({file_path: "target"})   → Bidirectional relationships, imports, coupling
-3. mcp__lgraph__get_context(targets=["target"])           → Module docs, key files, and context
-4. mcp__lgraph__get_file({file_path: "target"})           → File summary, symbols, endpoints, dependents
-5. Assess risk and explain it to the user
-\`\`\`
-
-## Checklist
-
-- [ ] Review direct blast radius first
-- [ ] Separate explicit import edges from implicit runtime/config coupling
-- [ ] Call \`get_dependencies\` to see relationship types and imported names
-- [ ] Use \`get_context\` when impact spills across a module boundary
-- [ ] Use \`get_file\` to capture file role and module context before interpreting impact
-
-## Interpreting the Graph
-
-- **Explicit dependencies**: direct import/require relationships
-- **Implicit dependencies**: inferred runtime/config/event/shared-type coupling
-- **Coupling strength**: \`tight\`, \`moderate\`, \`loose\`, or \`unknown\`
-
-## Risk Heuristics
-
-| Signal | Risk |
-|-------|------|
-| Few direct dependents, single module | LOW |
-| Several direct dependents, 2-3 modules | MEDIUM |
-| Many dependents or shared core modules | HIGH |
-| Tight implicit coupling + shared utility/config role | CRITICAL |
-
-## Critical Rules
-
-- **NEVER** use search as the first method for finding importers or dependents.
-- **NEVER** ignore implicit coupling when evaluating safety.
-- For shared utilities and config-heavy code, inspect both \`get_change_impact\` and \`get_dependencies\` before recommending a change.
+- \`get_dependencies\` returns the bidirectional graph: \`incoming\` (dependents — your blast radius), \`outgoing\` (what this file imports/uses), implicit coupling flagged via \`implicit: true\`.
+- \`get_pr_insights\` surfaces decisions and invariants already written down — the cheapest safety check before a refactor.
 `;
 
 const PROMPT_DEBUGGING = `---
@@ -190,27 +130,27 @@ This project has **Latentgraph** configured — a DRG plus module documentation 
 ## Workflow
 
 \`\`\`
-1. mcp__lgraph__get_file({file_path: "suspect"})           → File summary, symbols, endpoints, dependents
-2. mcp__lgraph__get_dependencies({file_path: "suspect"})   → Bidirectional relationships, imports, coupling
-3. mcp__lgraph__get_context(targets=["suspect"])           → Module docs, key files, and context
+1. mcp__lgraph__get_file(file_path="suspect")                      → File summary, symbols, endpoints, dependents
+2. mcp__lgraph__get_dependencies(file_path="suspect")              → Bidirectional relationships, imports, implicit coupling
+3. mcp__lgraph__get_call_chain(symbol="suspect::<fqn>")            → Trace callers/callees for the failing symbol
 4. mcp__lgraph__get_file(...) on upstream/downstream files as needed
-5. mcp__lgraph__get_change_impact({file_path: "suspect"})  → Downstream blast radius
+5. mcp__lgraph__get_pr_insights(target="suspect")                  → Recorded invariants and decisions for the file or module
 6. Read the raw source only to confirm the exact root cause
 \`\`\`
 
 ## Checklist
 
 - [ ] Start with the file where the symptom appears
-- [ ] Use \`get_dependencies\` before manual import chasing
-- [ ] Inspect implicit coupling if the failure crosses config/runtime boundaries
-- [ ] Use \`get_context\` when the issue is broader than one file
-- [ ] Use \`get_change_impact\` before proposing or applying the fix
+- [ ] Use \`get_dependencies\` before manual import chasing — read \`incoming\` to see who triggers this code
+- [ ] Inspect edges with \`implicit: true\` if the failure crosses config/runtime boundaries
+- [ ] Use \`get_call_chain\` when narrowing in on a specific failing function
+- [ ] Use \`get_pr_insights\` to surface invariants the bug may be violating
 
 ## Critical Rules
 
 - **NEVER** start by searching the whole repo for function names or error strings when a suspect file is known.
 - **ALWAYS** use \`get_dependencies\` to follow relationships before reading multiple raw files.
-- **ALWAYS** check \`get_change_impact\` before changing the fix target.
+- **ALWAYS** re-check the \`incoming\` list from \`get_dependencies\` before applying the fix.
 `;
 
 const PROMPT_CLI = `---
@@ -254,7 +194,6 @@ description: "Use when the user needs to run Latentgraph CLI commands like initi
 const PROMPTS: Record<string, string> = {
     'lgraph-exploring': PROMPT_EXPLORING,
     'lgraph-editing': PROMPT_EDITING,
-    'lgraph-impact': PROMPT_IMPACT,
     'lgraph-debugging': PROMPT_DEBUGGING,
     'lgraph-cli': PROMPT_CLI,
 };

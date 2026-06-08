@@ -5,123 +5,17 @@ import { createRequire } from 'module';
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { readProjectConfig, writeProjectConfig, ensureScanTargetFile, isReadOnlyProject, getGithubToken, setGithubToken } from '../../utils/config.js';
-import { fetchProjectStatus, sendInitScan, InitScanPayload, ScanTarget, ProjectStatusResponse } from '../../utils/api-client.js';
+import { fetchProjectStatus, fetchListFiles, sendInitScan, InitScanPayload, ScanTarget, ProjectStatusResponse } from '../../utils/api-client.js';
 import { resolveApiKey, resolveProject } from '../../utils/auth-resolver.js';
 import { getDaemonStatus, startDaemon } from '../../daemon/daemon-manager.js';
 import { getProjectTree, extractAllFilePaths, categorizeFiles, countProjectLOC } from '../../utils/tree-scanner.js';
+import { enforceLanguageSupport } from '../../utils/language-support.js';
 import { PIPELINE_PHASES, currentPhaseLabel, formatElapsed } from '../../utils/phase-display.js';
 
 const require = createRequire(import.meta.url);
 const { version } = require('../../../package.json');
 
 const execAsync = promisify(exec);
-
-// ─── DRG-Supported Languages (backend has resolvers for these) ───────────────
-// These extensions are fully supported by the dependency analysis pipeline.
-const DRG_SUPPORTED_EXTENSIONS = new Set([
-    '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx',  // JavaScript/TypeScript
-    '.py', '.pyw',                                  // Python
-    '.cs',                                          // C#
-    '.c', '.h',                                     // C
-    '.cpp', '.cc', '.cxx', '.hpp', '.hxx', '.hh',  // C++
-    '.java',                                        // Java
-    '.go',                                          // Go
-    '.kt', '.kts',                                  // Kotlin
-    '.rs',                                          // Rust
-    '.php', '.php5',                                // PHP
-    '.rb', '.rake',                                 // Ruby
-    '.swift',                                       // Swift
-]);
-
-// Known languages that are NOT supported by DRG pipeline
-// Key: extension, Value: language name for display
-const KNOWN_UNSUPPORTED_LANGUAGES: Record<string, string> = {
-    '.scala': 'Scala',
-    '.sc': 'Scala',
-    '.dart': 'Dart',
-    '.ex': 'Elixir',
-    '.exs': 'Elixir',
-    '.erl': 'Erlang',
-    '.hrl': 'Erlang',
-    '.clj': 'Clojure',
-    '.cljs': 'ClojureScript',
-    '.groovy': 'Groovy',
-    '.vb': 'Visual Basic',
-    '.fs': 'F#',
-    '.fsx': 'F#',
-    '.hs': 'Haskell',
-    '.lhs': 'Haskell',
-    '.ml': 'OCaml',
-    '.mli': 'OCaml',
-    '.pl': 'Perl',
-    '.pm': 'Perl',
-    '.r': 'R',
-    '.R': 'R',
-    '.lua': 'Lua',
-    '.jl': 'Julia',
-    '.nim': 'Nim',
-    '.cr': 'Crystal',
-    '.v': 'V',
-    '.zig': 'Zig',
-    '.d': 'D',
-    '.pas': 'Pascal',
-    '.pp': 'Pascal',
-    '.f90': 'Fortran',
-    '.f95': 'Fortran',
-    '.f03': 'Fortran',
-    '.cob': 'COBOL',
-    '.cbl': 'COBOL',
-};
-
-interface LanguageCheckResult {
-    unsupportedFiles: number;
-    unsupportedLanguages: string[];
-    unsupportedDetails: Record<string, number>;  // { "Ruby": 25, "PHP": 10 }
-    hasUnsupported: boolean;
-}
-
-/**
- * Check files for unsupported languages.
- * Returns details about any unsupported languages found.
- */
-function checkLanguageSupport(filePaths: string[]): LanguageCheckResult {
-    const unsupportedDetails: Record<string, number> = {};
-    let unsupportedFiles = 0;
-
-    for (const filePath of filePaths) {
-        const ext = path.extname(filePath).toLowerCase();
-        const langName = KNOWN_UNSUPPORTED_LANGUAGES[ext];
-
-        if (langName) {
-            unsupportedFiles++;
-            unsupportedDetails[langName] = (unsupportedDetails[langName] || 0) + 1;
-        }
-    }
-
-    return {
-        unsupportedFiles,
-        unsupportedLanguages: Object.keys(unsupportedDetails).sort(),
-        unsupportedDetails,
-        hasUnsupported: unsupportedFiles > 0,
-    };
-}
-
-/**
- * Prompt user to continue when unsupported languages are found.
- */
-async function promptContinueWithUnsupported(): Promise<boolean> {
-    const rl = createInterface({
-        input: process.stdin,
-        output: process.stdout,
-    });
-
-    return new Promise((resolve) => {
-        rl.question('Continue anyway? (y/N): ', (answer) => {
-            rl.close();
-            resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
-        });
-    });
-}
 
 /**
  * Prompt user to confirm the default branch for indexing.
@@ -135,7 +29,7 @@ async function promptConfirmDefaultBranch(branchName: string): Promise<boolean> 
     return new Promise((resolve) => {
         console.log('');
         console.log(`As you are indexing this branch '${branchName}' it will be counted as the default branch.`);
-        rl.question('Proceed? (Y/n): ', (answer) => {
+        rl.question('Proceed? (y/n, default yes): ', (answer) => {
             rl.close();
             const normalized = answer.toLowerCase().trim();
             resolve(normalized === '' || normalized === 'y' || normalized === 'yes');
@@ -158,18 +52,39 @@ const SHORT_LABELS = PIPELINE_PHASES.map(p => p.label.split(' ')[0]);
  * movement, so the terminal never scrolls. Ctrl+C stops the watch loop without
  * killing the pipeline — the phase is persisted in MongoDB so "lgraph status"
  * shows the current position on next run.
+ *
+ * Terminal detection mirrors the UI's IndexingProgressPanel: completed /
+ * completed_with_warnings / failed / pipeline_phase === 'failed'. Also exits
+ * when the local daemon disappears, since the pipeline is then orphaned from
+ * the CLI's perspective.
  */
-async function watchPipelineProgress(apiKey: string, projectId: string, branch: string): Promise<void> {
+async function watchPipelineProgress(
+    apiKey: string,
+    projectId: string,
+    branch: string,
+    projectRoot: string,
+): Promise<{ completed: boolean }> {
     const startTime = Date.now();
     let watching = true;
     let latestStatus: ProjectStatusResponse | null = null;
     let spinnerIdx = 0;
 
     let finalMessage = '';
+    let completed = false;
     let pollTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const onSigint = () => { watching = false; };
     process.once('SIGINT', onSigint);
+
+    // Daemon-death check: if the daemon was killed externally, the pipeline is
+    // effectively orphaned from this CLI's perspective — exit so the user can
+    // restart cleanly.
+    const checkDaemonAlive = (): boolean => {
+        if (getDaemonStatus(projectRoot).running) return true;
+        finalMessage = '[Init] ✗ Daemon stopped. Pipeline state preserved — run "lgraph status".';
+        watching = false;
+        return false;
+    };
 
     // Fire-and-forget poll that reschedules itself every POLL_INTERVAL_MS
     const schedulePoll = () => {
@@ -177,10 +92,15 @@ async function watchPipelineProgress(apiKey: string, projectId: string, branch: 
             .then(status => {
                 latestStatus = status;
                 const s = status.init_scan_status;
-                if (s === 'completed' || s === 'completed_with_warnings') {
+                const p = status.pipeline_phase;
+                const isCompleted = s === 'completed' || s === 'completed_with_warnings';
+                const isFailed = s === 'failed' || p === 'failed';
+
+                if (isCompleted) {
                     finalMessage = `[Init] ✓ Pipeline complete — ${status.file_count} files indexed.`;
+                    completed = true;
                     watching = false;
-                } else if (s === 'failed') {
+                } else if (isFailed) {
                     finalMessage = '[Init] ✗ Pipeline failed. Run "lgraph status" for details.';
                     watching = false;
                 }
@@ -242,6 +162,7 @@ async function watchPipelineProgress(apiKey: string, projectId: string, branch: 
     if (!process.stdout.isTTY) {
         schedulePoll();
         while (watching) {
+            if (!checkDaemonAlive()) break;
             // Cast needed: CFA narrows latestStatus → null inside the loop (async .then()
             // assignment is invisible to TypeScript's control-flow analysis).
             const snap = latestStatus as ProjectStatusResponse | null;
@@ -252,12 +173,16 @@ async function watchPipelineProgress(apiKey: string, projectId: string, branch: 
         if (pollTimeoutId) clearTimeout(pollTimeoutId);
         process.off('SIGINT', onSigint);
         if (finalMessage) console.log('\n' + finalMessage + '\n');
-        return;
+        return { completed };
     }
 
     schedulePoll();
+    // Daemon-status check is cheap (file read + signal probe) but no need to do
+    // it every animation tick — once per second is plenty for responsiveness.
+    const DAEMON_CHECK_EVERY = Math.max(1, Math.floor(1000 / TICK_MS));
     try {
         while (watching) {
+            if (spinnerIdx % DAEMON_CHECK_EVERY === 0 && !checkDaemonAlive()) break;
             draw();
             spinnerIdx++;
             await new Promise<void>(r => setTimeout(r, TICK_MS));
@@ -275,6 +200,7 @@ async function watchPipelineProgress(apiKey: string, projectId: string, branch: 
             console.log('[Init] Run "lgraph status" to see the current phase.\n');
         }
     }
+    return { completed };
 }
 
 /**
@@ -287,16 +213,16 @@ async function promptForReindex(): Promise<boolean> {
     });
 
     return new Promise((resolve) => {
-        rl.question('Do you want to re-index the project? (y/N): ', (answer) => {
+        rl.question('Do you want to re-index the project? (y/n, default no): ', (answer) => {
             rl.close();
-            resolve(answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes');
+            const normalized = answer.trim().toLowerCase();
+            resolve(normalized === 'y' || normalized === 'yes');
         });
     });
 }
 
 export interface InitOptions {
     force?: boolean;
-    guest?: boolean;
     apiKey?: string;
     ghToken?: string;
     projectName?: string;
@@ -305,7 +231,7 @@ export interface InitOptions {
 
 export async function initCommand(options: InitOptions = {}): Promise<void> {
     const projectRoot = process.cwd();
-    const isAuthInteractive = !options.guest && !options.apiKey;
+    const isAuthInteractive = !options.apiKey;
     const isProjectInteractive = !!(process.stdin.isTTY);
 
     // Block contributors and public viewers — they can only use MCP tools, not index projects
@@ -325,7 +251,6 @@ export async function initCommand(options: InitOptions = {}): Promise<void> {
     // Step 1: Resolve API key
     console.log('[Init] Step 1/5: Checking API key...');
     const authResult = await resolveApiKey({
-        guest: options.guest,
         apiKey: options.apiKey,
         interactive: isAuthInteractive,
         commandLabel: 'Init',
@@ -344,12 +269,6 @@ export async function initCommand(options: InitOptions = {}): Promise<void> {
 
     // Step 2: Resolve project
     console.log('[Init] Step 2/5: Checking project configuration...');
-
-    // If guest flow returned a project_id, save it before resolving
-    if (authResult.projectId && !readProjectConfig(projectRoot)) {
-        const { setProject } = await import('../../utils/config.js');
-        setProject(authResult.projectId, options.projectName || 'Guest Project', projectRoot);
-    }
 
     const project = await resolveProject({
         apiKey,
@@ -474,42 +393,30 @@ export async function initCommand(options: InitOptions = {}): Promise<void> {
     const totalLOC = countProjectLOC(projectRoot, categorized.source_files);
     console.log(`[Init] Total LOC: ${totalLOC}`);
 
-    console.log(`[Init]   Source files: ${categorized.source_files.length}`);
+    // Prefer the backend's indexed count when available; fall back to local on first init.
+    let displaySourceCount = categorized.source_files.length;
+    let sourceCountSuffix = ' (local count — first indexing run)';
+    try {
+        const branch = gitInfo.current_branch || projectConfig.default_branch || projectConfig.user_branch || 'main';
+        const listed = await fetchListFiles(apiKey, project.projectId, branch);
+        if (typeof listed.total_files === 'number' && listed.total_files > 0) {
+            displaySourceCount = listed.total_files;
+            sourceCountSuffix = ' (from backend index — matches LatentView)';
+        }
+    } catch {
+        // first init / backend unreachable — keep local count
+    }
+
+    console.log(`[Init]   Source files: ${displaySourceCount}${sourceCountSuffix}`);
     console.log(`[Init]   Config files: ${categorized.config_files.length}`);
     console.log(`[Init]   Asset files: ${categorized.asset_files.length}\n`);
 
-    // Step 4b: Check for unsupported languages
+    // Step 4b: Check for unsupported languages.
+    // Blocks (exit 1) when >50% of recognized code files are in unsupported
+    // languages; warns and continues when some but <=50% are.
     console.log('[Init] Checking language support...');
-    const langCheck = checkLanguageSupport(allFiles);
-
-    if (langCheck.hasUnsupported) {
-        console.log('');
-        console.log('╔═══════════════════════════════════════════════════════════════════╗');
-        console.log('║   ⚠️   UNSUPPORTED LANGUAGES DETECTED                              ║');
-        console.log('╚═══════════════════════════════════════════════════════════════════╝');
-        console.log('');
-        console.log(`Found ${langCheck.unsupportedFiles} file(s) in unsupported languages:`);
-        for (const [lang, count] of Object.entries(langCheck.unsupportedDetails)) {
-            console.log(`   • ${lang}: ${count} file(s)`);
-        }
-        console.log('');
-        console.log('These files will be SKIPPED during dependency analysis.');
-        console.log('');
-        console.log('Supported languages: JavaScript, TypeScript, Python, C#, C, C++, Java, Go, Kotlin, Rust, PHP, Ruby, Swift');
-        console.log('');
-
-        if (process.stdin.isTTY) {
-            const shouldContinue = await promptContinueWithUnsupported();
-            if (!shouldContinue) {
-                console.log('\n[Init] Aborted by user.\n');
-                process.exit(0);
-            }
-            console.log('');
-        } else {
-            // Non-interactive mode: warn but continue
-            console.log('[Init] Non-interactive mode: continuing with supported files only.\n');
-        }
-    } else {
+    const langCheck = enforceLanguageSupport(allFiles, 'Init');
+    if (!langCheck.hasUnsupported) {
         console.log('[Init] ✓ All source files are in supported languages\n');
     }
 
@@ -653,7 +560,8 @@ export async function initCommand(options: InitOptions = {}): Promise<void> {
             response.next_steps.forEach((step) => console.log(`  - ${step}`));
         }
 
-        // Auto-run analyze after init only if it has never been run before
+        // First-ever init: populate the dashboard with the local count immediately
+        // so the user sees something while the backend pipeline runs.
         const latestConfig = readProjectConfig(projectRoot);
         if (!latestConfig?.last_analyzed_at) {
             console.log('\n[Init] Running first-time code analysis...');
@@ -670,14 +578,29 @@ export async function initCommand(options: InitOptions = {}): Promise<void> {
                 console.error('\n    lgraph analyze\n');
             }
         } else {
-            console.log(`\n[Init] Skipping auto-analyze (already analyzed at ${latestConfig.last_analyzed_at}).`);
-            console.log('Run "lgraph analyze" manually to refresh the metrics.\n');
+            console.log(`\n[Init] Skipping pre-pipeline analyze (already analyzed at ${latestConfig.last_analyzed_at}).`);
         }
 
         // Watch pipeline progress — polls phase from DB every 10s.
         // Ctrl+C exits the watch loop but the pipeline keeps running.
         // "lgraph status" will always show the last persisted phase.
-        await watchPipelineProgress(apiKey, project.projectId, gitInfo.current_branch);
+        const { completed } = await watchPipelineProgress(apiKey, project.projectId, gitInfo.current_branch, projectRoot);
+
+        // Post-pipeline analyze: backend now has the indexed count, so this run
+        // syncs the Code Analysis dashboard with LatentView. Skipped on Ctrl+C / pipeline failure.
+        if (completed) {
+            console.log('[Init] Running analyze to sync dashboards with the new index...');
+            try {
+                const { analyzeCommand } = await import('./analyze.js');
+                await analyzeCommand();
+            } catch (err) {
+                console.error(`\n[Init] ⚠️  Post-pipeline analyze failed: ${(err as Error).message}`);
+                console.error('[Init] Run "lgraph analyze" manually to refresh the dashboard.\n');
+            }
+        } else {
+            console.log('[Init] Pipeline did not finish — skipping post-pipeline analyze.');
+            console.log('[Init] Run "lgraph status" then "lgraph analyze" once the pipeline completes.\n');
+        }
 
     } catch (error) {
         console.error(`\n❌ Failed to initialize project: ${(error as Error).message}`);

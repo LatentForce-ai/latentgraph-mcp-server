@@ -8,6 +8,7 @@
  * Usage: node daemon.js <projectRoot> <projectId> <apiKey>
  */
 
+import { existsSync, statSync } from 'fs';
 import { WebSocketClient } from './websocket-client.js';
 import { writeDaemonStatus, removeDaemonPid, removeDaemonStatus, DaemonStatus } from '../utils/config.js';
 
@@ -20,6 +21,18 @@ if (args.length < 3) {
 
 const [projectRoot, projectId, apiKey] = args;
 
+// Refuse to start if the directory we'd execute tool calls in is missing.
+// The orchestrator proxies git diff / read_files through this daemon and
+// runs them against `projectRoot`; if the directory was moved or deleted
+// since the last `lgraph init`, the daemon would register on the WebSocket
+// but every tool call would silently fail downstream. Fail loud, fail early.
+if (!existsSync(projectRoot) || !statSync(projectRoot).isDirectory()) {
+    console.error(`[Daemon] ❌ working_directory does not exist: ${projectRoot}`);
+    console.error('[Daemon]    The project may have been moved or deleted since the daemon was last started.');
+    console.error('[Daemon]    Run `lgraph stop` then `lgraph start` from the project root to re-register.');
+    process.exit(1);
+}
+
 let wsClient: WebSocketClient | null = null;
 let isShuttingDown = false;
 let startedAt = new Date().toISOString();
@@ -30,6 +43,7 @@ function updateStatus(connected: boolean): void {
         connected,
         project_id: projectId,
         started_at: startedAt,
+        working_directory: projectRoot,
     };
     writeDaemonStatus(status, projectRoot);
 }

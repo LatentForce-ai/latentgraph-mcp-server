@@ -12,191 +12,70 @@ const SECTION_MARKER = '<!-- lgraph-mcp-instructions -->';
 const END_MARKER = '<!-- end-lgraph-mcp-instructions -->';
 
 const CLAUDE_MD_CONTENT = `${SECTION_MARKER}
-## Latentgraph MCP Tools — MANDATORY USAGE RULES
+## Latentgraph MCP
 
-This project has the **Latentgraph MCP server** (\`lgraph\`) configured with a pre-built dependency relationship graph (DRG) and CodeWiki-backed module documentation. You MUST use these tools as the primary way to understand indexed source code. Do NOT start by grepping or reading raw source files when MCP can answer the question faster and more safely.
+Nine tools query a pre-built dependency + knowledge graph. **Three are auto-injected by hooks — don't re-call them.** Two are your decisions. Four are direct lookups for when the auto-injections aren't enough.
 
-### Tools Overview
+### Auto-injected (data appears in your context — read it, don't re-fetch)
 
-| Tool | When to Use | What it gives you |
-|------|-------------|-------------------|
-| \`get_context\` | **DEFAULT first call** for any artifact. Pass \`targets=['project']\` for project overview, or file/module/symbol names | Architecture summary, module tree, file summaries, symbol context — unified entry point |
-| \`get_file\` | Before reading or editing any indexed source file | Dense file summary, symbols, module role, implicit coupling preview, top dependents |
-| \`get_dependencies\` | Trace relationships, imports, reverse deps, and runtime coupling | Relationship types, imported names, dependency summaries, reverse deps, implicit coupling |
-| \`get_change_impact\` | **BEFORE editing** to see what would break | Affected files grouped by depth, supports symbol-level impact analysis |
-| \`get_design_knowledge\` | Before editing to learn project conventions | PR-mined invariants and architectural decisions |
-| \`get_symbol\` | Locate a function/class/method by name | File path, line span, signature, kind, decorators, docstring |
-| \`get_call_chain\` | Trace symbol-level call graph | Callers and callees with confidence scores |
-| \`get_dependency_path\` | Find how file A connects to file B | Shortest path with edge types (explicit/implicit) |
-| \`search_codebase\` | Topic-based discovery across summaries/wiki/knowledge | Ranked hits by file, module, or knowledge type |
-| \`ask_codebase\` | Natural language questions about the codebase | RAG-based answer with file citations |
-| \`update_graph\` | Record learnings about DRG/CodeWiki | Learnings stored separately, queued for owner approval |
+| Trigger | Data injected | What to do |
+|---|---|---|
+| Session start | \`get_project_overview\` — architecture summary + top modules | Internalise the architecture before drilling. |
+| PreToolUse \`Read\` on indexed source | \`get_file\` — file summary, symbols, endpoints | Read it. Use the symbols / fqns directly. |
+| PreToolUse \`Edit\`/\`Write\`/\`MultiEdit\` on indexed source | \`get_file\` + \`get_dependencies\` (explicit + implicit, in + out) + \`get_pr_insights\` (invariants + decisions) | Respect every invariant. Use the dependency rows to size blast radius before changing the file. |
 
-### The \`get_context\` Tool (Unified Entry Point)
+If a hook block says \`(fetch failed)\` or is missing, call the tool yourself with the suggested signature.
 
-This is your **DEFAULT first call** for understanding any artifact. It replaces the old project_overview, list_modules, and module_summary tools.
+### Your decisions (two tools the agent owns)
 
-**Target types:**
-- \`targets=['project']\` → Architecture summary + module tree (use \`depth=-1, include_files=true\` for full tree)
-- \`targets=['path/to/file.py']\` → File context with summary, structure, knowledge
-- \`targets=['module_name']\` → Module context with wiki docs, files, children
-- \`targets=['file.py::function_name']\` → Symbol context with callers/callees
-- \`targets=['function_name']\` → Bare symbol lookup across all files
+**\`ask_codebase(question)\`** — call this **as step 2 of every task** when handed a problem statement. Returns a synthesised answer plus a \`citations[]\` list of source-file paths. This is the bridge from "the user asked X" to "I should look at file Y". One call per task is the norm — pass the problem statement in, follow the citations.
 
-**Examples:**
-\`\`\`
-get_context(targets=['project'])                                    # Quick orientation
-get_context(targets=['project'], depth=-1, include_files=true)      # Full module tree with files
-get_context(targets=['src/auth.py', 'src/login.py'])                # Multiple files at once
-get_context(targets=['auth.py::authenticate'], include=['callers']) # Symbol with callers
-\`\`\`
+**\`get_call_chain(symbol="<file>::<symbol>", direction=…)\`** — call this **before changing any function's signature, contract, or behaviour**. \`direction="callers"\` to see who breaks. \`direction="callees"\` when tracing what a function activates. \`direction="both"\` only when you need both sides. Use \`get_symbol\` (with \`name\` and/or \`file_prefix\`) or read the injected file context first to get the \`fqn\`.
 
-### Recording Learnings (\`update_graph\`)
+### Direct lookup (when the auto-injection isn't enough)
 
-Use this tool to record AI learnings about the codebase. All edits are queued for owner approval.
+| Need | Tool |
+|---|---|
+| Find symbols (by name, by subtree, or both) | \`get_symbol(name=…?, file_prefix=…?)\` — at least one required; \`name\` alone searches the project, \`file_prefix\` alone lists all symbols under it, combined narrows name to that subtree |
+| Drill into a specific module | \`get_module_info\` |
+| Record a learning back into the graph | \`update_graph\` (queued for owner approval) |
 
-**Operations:**
-| Operation | Purpose | Parameters |
-|-----------|---------|------------|
-| \`edit_file_summary\` | Add learning about a file | \`file_path\`, \`summary\` |
-| \`edit_module_doc\` | Add learning about module | \`module_name\`, \`content\` |
-| \`edit_dependency_summary\` | Add learning about a dependency | \`file_path\`, \`dependency_path\`, \`summary\` |
-| \`add_dependency\` | Record discovered dependency | \`file_path\`, \`dependency_path\`, \`[summary]\` |
-| \`delete_dependency\` | Suggest removing dependency | \`file_path\`, \`dependency_path\` |
-| \`add_dependent\` | Record discovered dependent | \`file_path\`, \`dependent_path\`, \`[summary]\` |
-| \`delete_dependent\` | Suggest removing dependent | \`file_path\`, \`dependent_path\` |
-| \`add_implicit_dependency\` | Record runtime/coupling dependency | \`source_file\`, \`dep_file\`, \`[edge_summary]\` |
-| \`edit_implicit_dependency\` | Add learning about implicit dep | \`source_file\`, \`dep_file\`, \`edge_summary\` |
-| \`ignore_implicit_dependency\` | Mark implicit dep as false positive | \`source_file\`, \`dep_file\` |
-| \`delete_implicit_dependency\` | Suggest removing implicit dep | \`source_file\`, \`dep_file\` |
+### Symbol id format
 
-### Operating Protocol
+* Top-level: \`<file>::<name>\` — e.g. \`src/auth.py::login\`
+* Method: \`<file>::<Class>.<method>\` (dot, not \`::\`) — e.g. \`src/auth.py::AuthService.refresh\`
+* Don't guess — \`get_symbol\` and \`get_file\` outputs include the ready-to-chain \`fqn\`.
 
-1. **Start of session / unfamiliar area**
-   - Call \`get_context(targets=['project'])\` first for architecture overview
-   - Call \`get_context(targets=['project'], depth=-1)\` to see full module tree
-   - Call \`get_context(targets=[module_name])\` for the subsystem you'll touch
-   - Call \`get_file\` on specific files you expect to edit
-   - Run independent MCP calls in parallel when exploring multiple files
+### Output is TOON
 
-2. **Before reading any indexed source file**
-   - Call \`get_file\` first for summary, symbols, and context
-   - Only use raw \`Read\` for implementation details the summary doesn't cover
-   - Use \`get_context\` when you need module-level context
+Read tools return data inside a fenced \`toon\` block. TOON encodes JSON compactly: scalars as \`key: value\`; arrays declare \`[N]{cols}:\` then stream tab-delimited rows. Read fields by column name, not position. \`update_graph\` returns plain text.
 
-3. **Before editing any indexed source file**
-   - Call \`get_file\` to understand the file's purpose and module role
-   - Call \`get_dependencies\` to inspect relationships and coupling
-   - Call \`get_change_impact\` to understand downstream impact
-   - Call \`get_design_knowledge\` to learn invariants you must not break
-
-4. **When debugging or tracing behavior**
-   - Use \`get_dependencies\` for imports, reverse deps, and implicit coupling
-   - Use \`get_call_chain\` for symbol-level tracing
-   - Use \`get_dependency_path\` to find how two files are connected
-   - Use \`ask_codebase\` for cross-cutting questions
-
-5. **When answering architecture questions**
-   - Never answer from a single \`get_file\` call
-   - Use \`get_context(targets=['project'])\` → \`get_context(targets=[module])\` → \`get_file\`
-   - Use \`ask_codebase\` for natural language architecture questions
-
-6. **For non-source files**
-   - Read \`.json\`, \`.yaml\`, \`.md\`, etc. directly — do not call MCP tools on them
-
-### Supported file types
-
-**Indexed (use MCP tools):** \`.js\` \`.jsx\` \`.ts\` \`.tsx\` \`.py\` \`.java\` \`.cpp\` \`.cs\` \`.go\` \`.c\` \`.h\` \`.css\` \`.scss\` \`.html\`
-
-**NOT indexed (read directly):** \`.json\` \`.yaml\` \`.yml\` \`.toml\` \`.env\` \`.md\` \`.txt\` \`.pdf\` \`.png\` \`.lock\` \`.xml\` \`.csv\`
-
-### Task Patterns
-
-| User intent | Recommended tools |
-|-------------|-------------------|
-| "Explain the project" | \`get_context(targets=['project'])\` → \`get_context(targets=[module])\` |
-| "What does this file do?" | \`get_file(file_path)\` |
-| "What module owns this?" | \`get_context(targets=[file_path])\` — check the module field |
-| "What does this depend on?" | \`get_dependencies(file_path)\` |
-| "What uses this?" | \`get_change_impact(target=file_path)\` |
-| "How are these files connected?" | \`get_dependency_path(source, target)\` |
-| "Find function X" | \`get_symbol(name='X')\` |
-| "What calls this function?" | \`get_call_chain(symbol='file::func')\` |
-| "How does auth work?" | \`ask_codebase(question='How does auth work?')\` |
-| "Fix/refactor this file" | \`get_file\` → \`get_dependencies\` → \`get_change_impact\` → \`get_design_knowledge\` |
-| "I learned something new" | \`update_graph(operation='edit_file_summary', ...)\` |
-
-### Critical Rules
-
-- **NEVER** use Grep/Glob as the first step for indexed source-file understanding
-- **NEVER** answer module or architecture questions from a single raw file read
-- **ALWAYS** use \`get_change_impact\` before non-trivial source edits
-- **ALWAYS** use \`get_design_knowledge\` before editing shared code to learn invariants
-- **ALWAYS** use \`update_graph\` when you discover something not in the existing summaries
-- **ALWAYS** record edge cases, bugs, hidden dependencies, and non-obvious behaviors
-- Do not pass \`project_id\` unless you need to override; the MCP server injects it from environment
-
----
-
-## MANDATORY: Recording Learnings with \`update_graph\`
-
-**THIS IS A MEMORY SYSTEM - YOU MUST USE IT PROACTIVELY.**
-
-Every session, you MUST use \`mcp__lgraph__update_graph\` to record insights discovered during exploration. This is NOT optional. Learnings persist across sessions and help future agents understand the codebase better.
-
-### Recording Frequency
-- After reading **every 3-5 files**, ask yourself: "Did I learn something new?"
-- If YES → IMMEDIATELY call \`update_graph\` before continuing
-- If NO → Continue, but stay alert for insights
-
-### WHEN to Use \`update_graph\` (Triggers)
-
-You MUST call \`update_graph\` when you discover ANY of the following:
-
-| Trigger | What to Record | Operation |
-|---------|---------------|-----------|
-| **Edge case or bug** | Discovered a bug, edge case, or gotcha in a file | \`edit_file_summary\` |
-| **Hidden dependency** | Found a runtime coupling not in imports (Redis, events, config) | \`add_implicit_dependency\` |
-| **Why code exists** | Understood WHY code is written a certain way | \`edit_file_summary\` |
-| **Module behavior** | Learned how a module works beyond its docs | \`edit_module_doc\` |
-| **Dependency purpose** | Understood why file A depends on file B | \`edit_dependency_summary\` |
-| **Missing relationship** | Found a dependency that's not in the graph | \`add_dependency\` |
-
-### HOW to Use \`update_graph\`
-
-\`\`\`
-# Record a file insight
-update_graph(
-  operation="edit_file_summary",
-  file_path="src/auth.py",
-  summary="EDGE CASE: Token refresh fails silently if Redis is down."
-)
-
-# Record an implicit dependency
-update_graph(
-  operation="add_implicit_dependency",
-  source_file="src/api/handler.py",
-  dep_file="src/workers/processor.py",
-  edge_summary="Handler publishes to Redis queue that processor consumes"
-)
+\`\`\`toon
+path: src/auth.py
+key_symbols[2]{name,kind,fqn,is_async}:
+  login\tfunction\tsrc/auth.py::login\tfalse
+  AuthService.refresh\tmethod\tsrc/auth.py::AuthService.refresh\ttrue
 \`\`\`
 
-### MANDATORY Recording Protocol
+### Gotchas that bite
 
-1. **During exploration:** When you read files and discover something not in the existing summary → RECORD IT
-2. **After debugging:** When you find the root cause of an issue → RECORD IT
-3. **After understanding flow:** When you trace how components connect → RECORD relationships
-4. **Before ending session:** Review what you learned and RECORD any unrecorded insights
+* \`get_module_info("project")\` → rejected. SessionStart hook already gave you the project overview.
+* \`get_call_chain("<file>::<ClassName>")\` (bare class) → rejected. Classes aren't callable. Use \`<Class>.__init__\` or \`<Class>.<method>\`.
+* \`get_dependencies\` may return the same target twice (\`implicit: false\` + \`implicit: true\`). Dedupe by \`(target, implicit)\` if you only care about file identity. Implicit = runtime coupling (Redis, event bus, shared config), not an import.
+* \`get_call_chain\` empty states: \`unresolved: true\` = fqn not in graph (typo/external/class); \`unresolved: false\` + empty arrays = indexed but no tracked edges in that direction.
+* File extensions case-folded on lookup (\`.PY\` → \`.py\`); the rest of the path is case-sensitive.
+* Non-source files (\`.json\`, \`.yaml\`, \`.md\`, lockfiles) NOT indexed — use \`Read\` directly.
+* \`degraded: true\` = enrichment metadata missing. Path/names survive, summaries empty. Fall back to raw \`Read\`.
+* \`update_graph\` always returns \`applied: false\` + \`pending_edit_id\`; the edit applies after owner approval. Same edit submitted twice queues twice (no idempotency).
 
-### What Makes a Good Learning?
+### When to fall back to \`Read\`/\`Grep\`
 
-| Good Learning | Bad Learning |
-|--------------|--------------|
-| "This function silently fails if config.X is missing" | "This function processes data" |
-| "Must call init() before any other method" | "Has several methods" |
-| "File A triggers File B via Redis pub/sub on channel X" | "File A and B are related" |
+You need the literal source body, the file isn't indexed, the field you wanted is \`degraded\`, or it's a tiny file where \`get_file\` overhead beats just reading. Mix freely — MCP for structure and relationships, raw tools for content.
 
-If MCP results look stale after major codebase changes, do a full Latentgraph re-scan with \`lgraph init --force\`.
+### Conventions
+
+* \`project_id\` and \`branch\` resolve from environment — never pass them.
+* Run independent MCP calls in parallel. Never look up the same \`fqn\` twice in a turn.
 ${END_MARKER}`;
 
 /**

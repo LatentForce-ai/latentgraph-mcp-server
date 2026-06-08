@@ -7,7 +7,6 @@ import {
     clearUrls,
     clearApiKey,
     getConfiguredUrls,
-    isGuestKey,
     getGithubToken,
     setGithubToken,
     clearGithubToken,
@@ -66,9 +65,8 @@ function showConfig(): void {
     // API Key
     console.log('API Key:');
     if (globalConfig?.api_key) {
-        const keyType = isGuestKey() ? '(guest)' : '(paid)';
         const maskedKey = globalConfig.api_key.substring(0, 8) + '...' + globalConfig.api_key.slice(-4);
-        console.log(`  ${maskedKey} ${keyType}`);
+        console.log(`  ${maskedKey}`);
     } else {
         console.log('  Not configured');
     }
@@ -157,8 +155,9 @@ async function setConfigValue(key?: string, value?: string): Promise<void> {
 async function clearConfig(key?: string): Promise<void> {
     if (!key) {
         // Clear everything
-        const answer = await prompt('Clear all configuration? (y/N): ');
-        if (answer.toLowerCase() !== 'y') {
+        const answer = await prompt('Clear all configuration? (y/n, default no): ');
+        const trimmed = answer.trim().toLowerCase();
+        if (trimmed !== 'y' && trimmed !== 'yes') {
             console.log('Cancelled.');
             return;
         }

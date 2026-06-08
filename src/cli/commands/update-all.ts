@@ -1,10 +1,12 @@
 import { spawn } from 'child_process';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, statSync } from 'fs';
+import { randomUUID } from 'crypto';
 import path from 'path';
 import { getApiKey, readProjectConfig, isReadOnlyProject, isPublicProject } from '../../utils/config.js';
 import { execFile as _execFile } from 'child_process';
 import { promisify } from 'util';
-import { fetchProjectStatus, sendAdvanceBaseline } from '../../utils/api-client.js';
+import { fetchProjectStatus, sendAdvanceBaseline, sendUpdateBegin, sendUpdateFinalize } from '../../utils/api-client.js';
+import { detectGitChanges } from '../../utils/git-changes.js';
 
 const execFileAsync = promisify(_execFile);
 
@@ -157,26 +159,117 @@ export async function updateAllCommand(options: UpdateAllOptions = {}): Promise<
     // ── Upfront gate: pipeline_run_meta.last_commit must exist for this branch ──
     // Single invariant for the whole pipeline. If missing, no phase runs (not
     // even update-drg). Establishes baseline = `lgraph init`'s responsibility.
-    {
-        const apiKey = getApiKey();
-        const projectConfig = readProjectConfig(process.cwd());
-        const projectId = projectConfig?.project_id;
-        const branch = projectConfig?.user_branch ?? projectConfig?.default_branch;
-        if (!apiKey || !projectId || !branch) {
-            console.error(
-                '❌ Missing API key, project_id, or branch in .lgraph/config.json — run `lgraph init` first.',
-            );
-            process.exit(1);
-        }
-        const status = await fetchProjectStatus(apiKey, projectId, branch);
-        if (!status.pipeline_baseline_commit) {
-            console.error(
-                `❌ Branch baseline missing for branch=${branch}. ` +
-                `Run \`lgraph init\` first to establish a baseline.`,
-            );
-            process.exit(1);
+    const apiKey = getApiKey();
+    const projectConfig = readProjectConfig(process.cwd());
+    const projectId = projectConfig?.project_id;
+    const branch = projectConfig?.user_branch ?? projectConfig?.default_branch;
+    if (!apiKey || !projectId || !branch) {
+        console.error(
+            '❌ Missing API key, project_id, or branch in .lgraph/config.json — run `lgraph init` first.',
+        );
+        process.exit(1);
+    }
+    const projectStatus = await fetchProjectStatus(apiKey, projectId, branch);
+    if (!projectStatus.pipeline_baseline_commit) {
+        console.error(
+            `❌ Branch baseline missing for branch=${branch}. ` +
+            `Run \`lgraph init\` first to establish a baseline.`,
+        );
+        process.exit(1);
+    }
+
+    // ── Umbrella reservation: one transaction covers all sub-steps ───────────
+    // Compute changed-files LOC the same way the per-step billing does:
+    // git diff against the last DRG/implicit commit, then sum newlines for
+    // every added/modified file. Reserve once via /update-begin; the returned
+    // umbrella_id is threaded through each child via env so they skip their
+    // own per-step billing. Finalize once on success (consume) or failure (refund).
+    let umbrellaLoc = 0;
+    let deletedCount = 0;
+    // On the very first update after `lgraph init`, neither DRG nor implicit
+    // has written its own `*_last_indexed_commit` yet — fall back to the
+    // branch baseline that init recorded so the umbrella reservation reflects
+    // the real changes since init (instead of charging 0 for an unbounded diff).
+    const umbrellaSince =
+        projectConfig?.drg_last_indexed_commit
+        ?? projectConfig?.implicit_last_indexed_commit
+        ?? projectStatus.pipeline_baseline_commit;
+    if (umbrellaSince) {
+        try {
+            const changes = await detectGitChanges(process.cwd(), umbrellaSince);
+            deletedCount = changes.deleted.length;
+            const changedPaths = [...changes.added, ...changes.modified];
+            for (const filePath of changedPaths) {
+                try {
+                    const absolutePath = path.join(process.cwd(), filePath);
+                    if (!existsSync(absolutePath)) continue;
+                    if (statSync(absolutePath).isDirectory()) continue;
+                    const content = readFileSync(absolutePath, 'utf-8');
+                    umbrellaLoc += content.split('\n').length;
+                } catch { /* unreadable file — skip */ }
+            }
+        } catch {
+            // Git unavailable or detached state — reserve at min-credit floor.
         }
     }
+
+    // Deletions have no LOC to read but still cause backend work (DRG node
+    // removal, file-index tombstoning, wiki regen for affected modules).
+    // Floor the umbrella at 1 LOC so deletion-only diffs aren't billed as free.
+    if (umbrellaLoc === 0 && deletedCount > 0) {
+        umbrellaLoc = 1;
+    }
+
+    let umbrellaId: string | null = null;
+    let umbrellaFinalized = false;
+    // One key per `lgraph update` invocation. If the POST below succeeds but
+    // the response is lost (TCP reset, timeout reading headers), a retry with
+    // the same key returns the existing reservation instead of stranding the
+    // original.
+    const idempotencyKey = randomUUID();
+    try {
+        const beginResp = await sendUpdateBegin(apiKey, {
+            project_id: projectId,
+            branch,
+            loc: umbrellaLoc,
+            idempotency_key: idempotencyKey,
+        });
+        umbrellaId = beginResp.umbrella_id;
+        process.env.LGRAPH_UMBRELLA_ID = umbrellaId;
+        const deletionsNote = deletedCount > 0 ? ` + ${deletedCount} deletion(s)` : '';
+        console.log(
+            `\n[UpdateAll] 💳 Reserved ${beginResp.credits_reserved} credit(s) for this run ` +
+            `(${umbrellaLoc.toLocaleString()} LOC${deletionsNote} since last update).`,
+        );
+    } catch (err) {
+        console.error(`\n❌ Failed to reserve credits: ${(err as Error).message}\n`);
+        process.exit(1);
+    }
+
+    const finalizeUmbrella = async (status: 'success' | 'failed'): Promise<void> => {
+        if (!umbrellaId || umbrellaFinalized) return;
+        umbrellaFinalized = true;
+        try {
+            await sendUpdateFinalize(apiKey, {
+                project_id: projectId,
+                umbrella_id: umbrellaId,
+                status,
+                loc: umbrellaLoc,
+            });
+        } catch (err) {
+            // Non-fatal: the stale-umbrella sweeper will refund on TTL expiry.
+            console.warn(
+                `[UpdateAll] ⚠️  finalize(${status}) failed: ${(err as Error).message}`,
+            );
+        }
+    };
+
+    const onSignal = (signal: NodeJS.Signals) => {
+        process.stderr.write(`\n[UpdateAll] ${signal} received — refunding umbrella reservation...\n`);
+        void finalizeUmbrella('failed').finally(() => process.exit(130));
+    };
+    process.on('SIGINT', onSignal);
+    process.on('SIGTERM', onSignal);
 
     // Show different header based on whether wiki is included
     if (skipWiki) {
@@ -204,6 +297,7 @@ export async function updateAllCommand(options: UpdateAllOptions = {}): Promise<
             elapsed_s: stats.elapsed_s ?? r.wall_s, cost_usd: stats.cost_usd, mode: stats.mode });
         if (!r.success) {
             console.error('\n[UpdateAll] ❌ update-drg failed — aborting pipeline.\n');
+            await finalizeUmbrella('failed');
             process.exit(1);
         }
     }
@@ -220,6 +314,7 @@ export async function updateAllCommand(options: UpdateAllOptions = {}): Promise<
             elapsed_s: stats.elapsed_s ?? r.wall_s, cost_usd: stats.cost_usd, mode: stats.mode });
         if (!r.success) {
             console.error('\n[UpdateAll] ❌ update-implicit failed — aborting pipeline.\n');
+            await finalizeUmbrella('failed');
             process.exit(1);
         }
     }
@@ -240,6 +335,7 @@ export async function updateAllCommand(options: UpdateAllOptions = {}): Promise<
             elapsed_s: stats.elapsed_s ?? r.wall_s, cost_usd: stats.cost_usd, mode: stats.mode });
         if (!r.success) {
             console.error('\n[UpdateAll] ❌ update-file-index failed — aborting pipeline.\n');
+            await finalizeUmbrella('failed');
             process.exit(1);
         }
     }
@@ -264,26 +360,21 @@ export async function updateAllCommand(options: UpdateAllOptions = {}): Promise<
             elapsed_s: stats.elapsed_s ?? r.wall_s, cost_usd: stats.cost_usd, mode: stats.mode });
         if (!r.success) {
             console.error('\n[UpdateAll] ❌ update-wiki failed — aborting pipeline.\n');
+            await finalizeUmbrella('failed');
             process.exit(1);
         }
     }
 
+    // Every sub-step succeeded — confirm the umbrella reservation.
+    await finalizeUmbrella('success');
+
     // ── Advance the shared baseline (sole writer of pipeline_run_meta.last_commit) ──
-    // Every phase that ran completed successfully. Advance once at the end so
-    // no phase service has to own the commit-storage decision, and so phases
-    // that run later in the pipeline don't see a moved baseline and NOOP.
-    // No fallbacks: project_id and branch must be in config (upfront gate already
-    // checked); a failed advance fails the pipeline so the next run sees a
-    // stale baseline and the user knows.
-    {
-        const apiKey = getApiKey();
-        const projectConfig = readProjectConfig(process.cwd());
-        const projectId = projectConfig?.project_id;
-        const branch = projectConfig?.user_branch ?? projectConfig?.default_branch;
-        if (!apiKey || !projectId || !branch) {
-            console.error('❌ Cannot advance baseline: missing API key / project_id / branch.');
-            process.exit(1);
-        }
+    // Every phase ran successfully. Advance once so no individual phase has to
+    // own commit-storage, and later phases don't see a moved baseline and NOOP.
+    // A failed advance is treated as a non-fatal warning: the summary still prints
+    // and the user is told to re-run. The alternative (process.exit here) would
+    // make a working pipeline look broken after a transient network hiccup.
+    try {
         const { stdout: headStdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: process.cwd() });
         const headCommit = headStdout.trim();
         const adv = await sendAdvanceBaseline(apiKey, {
@@ -295,6 +386,9 @@ export async function updateAllCommand(options: UpdateAllOptions = {}): Promise<
             `[UpdateAll] ✓ Baseline advanced — pipeline_run_meta.last_commit=${adv.last_commit.slice(0,8)} ` +
             `(branch=${adv.branch})`,
         );
+    } catch (err) {
+        console.warn(`\n[UpdateAll] ⚠️  Baseline advance failed: ${(err as Error).message}`);
+        console.warn('[UpdateAll]    Pipeline steps succeeded. Re-run "lgraph update" to retry baseline advance.\n');
     }
 
     const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
