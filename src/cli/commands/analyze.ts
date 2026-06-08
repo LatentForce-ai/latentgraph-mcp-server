@@ -5,9 +5,9 @@ import { promisify } from 'util';
 import { getEncoding } from 'js-tiktoken';
 import sloc from 'sloc';
 import { getApiKey, readProjectConfig, writeProjectConfig, isReadOnlyProject } from '../../utils/config.js';
-import { sendAnalyze, AnalyzePayload } from '../../utils/api-client.js';
+import { sendAnalyze, fetchListFiles, AnalyzePayload } from '../../utils/api-client.js';
 import { collectFrameworks } from '../../utils/frameworks.js';
-import { getProjectTree, extractAllFilePaths } from '../../utils/tree-scanner.js';
+import { getProjectTree, categorizeFiles } from '../../utils/tree-scanner.js';
 
 const execAsync = promisify(exec);
 
@@ -66,7 +66,7 @@ const SUPPORTED_LANGUAGES: Record<string, LanguageInfo> = {
     // Kotlin
     '.kt':   { slocLang: 'kt',   languageKey: 'kotlin', label: 'Kotlin' },
     '.kts':  { slocLang: 'kt',   languageKey: 'kotlin', label: 'Kotlin' },
-    // CSS / Web
+    // CSS / Web — must mirror tree-scanner.ts sourceExts (init uses the same list).
     '.css':  { slocLang: 'css',  languageKey: 'css',    label: 'CSS'    },
     '.scss': { slocLang: 'scss', languageKey: 'css',    label: 'CSS'    },
     '.html': { slocLang: 'html', languageKey: 'html',   label: 'HTML'   },
@@ -74,9 +74,6 @@ const SUPPORTED_LANGUAGES: Record<string, LanguageInfo> = {
 
 // Set of all supported extensions for quick lookup
 const ALL_SUPPORTED_EXTENSIONS = new Set<string>(Object.keys(SUPPORTED_LANGUAGES));
-
-// Extra analyze-only directory excludes. The shared tree-scanner walks the
-// filesystem with DEFAULT_EXCLUDE_PATTERNS (node_modules, dist, venv, .next,
 
 // Initialize tiktoken encoder (cl100k_base is used by GPT-4 / Claude-class models)
 const encoder = getEncoding('cl100k_base');
@@ -321,31 +318,47 @@ export async function analyzeCommand(): Promise<void> {
     // Step 3: Scan and analyze files
     console.log('[Analyze] Step 3/4: Scanning and analyzing project files...');
 
-    // Use the SAME tree scanner + exclude patterns as `lgraph init` so the two
-    // commands report consistent file counts. This walks the filesystem with
-    // DEFAULT_EXCLUDE_PATTERNS (node_modules, dist, venv, .next, etc.) and drops
-    // binary / lock / media files via SKIP_FILE_EXTENSIONS / SKIP_FILE_NAMES.
-    //
-    // Analyze then applies its own extra directory excludes on top (vendor/,
-    // target/, Pods/, .build/, etc.) so vendored deps don't inflate per-language
-    // LOC numbers. Init's behavior is intentionally left alone.
     const treeData = await getProjectTree(projectRoot);
-    const allTrackedFiles = extractAllFilePaths(treeData.tree);
-    if (allTrackedFiles.length === 0) {
+    if (treeData.file_count === 0) {
         throw new Error('No files found in this directory.');
     }
 
-    // Filter to the extensions analyze knows how to LOC/tokenize.
-    // (analyze supports a superset of init's source list: PHP, Ruby, Rust, Swift,
-    //  Kotlin, etc. are all analyzed here even though init groups them as generic
-    //  files — but file discovery is now identical.)
-    const supportedFiles = allTrackedFiles.filter(f => {
-        const ext = path.extname(f).toLowerCase();
-        return ALL_SUPPORTED_EXTENSIONS.has(ext);
-    });
+    // Use the backend's indexed file list when it matches the current commit.
+    // If the user has made new commits since the last index, fall back to local
+    // scanning so the analysis reflects the actual working tree.
+    let supportedFiles: string[];
+    let usingBackendIndex = false;
+    try {
+        const { stdout: branchStdout } = await execAsync('git branch --show-current', { cwd: projectRoot });
+        const branch = branchStdout.trim() || projectConfig.default_branch || projectConfig.user_branch || 'main';
 
-    console.log(`[Analyze]   Total files (after excludes): ${allTrackedFiles.length}`);
-    console.log(`[Analyze]   Supported source files: ${supportedFiles.length}`);
+        // Compare current HEAD against the last file-index commit stored in config.
+        // If they differ, the backend index is stale — use local files instead.
+        let headCommit = '';
+        try {
+            const { stdout: headStdout } = await execAsync('git rev-parse HEAD', { cwd: projectRoot });
+            headCommit = headStdout.trim();
+        } catch { /* not a git repo */ }
+
+        const lastIndexedCommit = projectConfig.file_index_last_commit || '';
+        const indexIsCurrent = headCommit && lastIndexedCommit && headCommit === lastIndexedCommit;
+
+        if (!indexIsCurrent) throw new Error('stale_or_unknown');
+
+        const listed = await fetchListFiles(apiKey, projectConfig.project_id, branch);
+        if (!Array.isArray(listed.files) || listed.files.length === 0) throw new Error('empty');
+        supportedFiles = listed.files.filter(f => ALL_SUPPORTED_EXTENSIONS.has(path.extname(f).toLowerCase()));
+        usingBackendIndex = true;
+    } catch {
+        supportedFiles = categorizeFiles(treeData.tree).source_files.filter(f => ALL_SUPPORTED_EXTENSIONS.has(path.extname(f).toLowerCase()));
+    }
+
+    console.log(`[Analyze]   Files: ${treeData.file_count}`);
+    if (usingBackendIndex) {
+        console.log(`[Analyze]   Source files: ${supportedFiles.length} (from backend index — matches LatentView)`);
+    } else {
+        console.log(`[Analyze]   Source files: ${supportedFiles.length} (local count — run "lgraph init" to index, then re-run for backend count)`);
+    }
 
     if (supportedFiles.length === 0) {
         throw new Error(

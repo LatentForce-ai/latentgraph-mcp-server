@@ -2,27 +2,22 @@ import * as path from 'path';
 import {
     getApiKey,
     setApiKey,
-    setGuestKey,
-    isGuestKey,
     setProject,
     readProjectConfig,
 } from './config.js';
 import {
-    requestGuestKey,
     fetchProjects,
     createProject,
     Project,
 } from './api-client.js';
 import {
     promptApiKey,
-    promptKeyChoice,
     promptSelectProject,
     promptProjectName,
     promptCreateOrSelect,
 } from './prompts.js';
 
 export interface ResolveApiKeyOptions {
-    guest?: boolean;
     apiKey?: string;
     interactive?: boolean;
     commandLabel?: string;
@@ -30,21 +25,14 @@ export interface ResolveApiKeyOptions {
 
 export interface ResolveApiKeyResult {
     apiKey: string;
-    projectId?: string;
 }
 
 /**
- * Resolve API key from flags, config, or interactive prompts.
- * Guest flow returns both apiKey and projectId (from guest-key endpoint).
+ * Resolve API key from flags, config, or interactive prompt.
  */
 export async function resolveApiKey(opts: ResolveApiKeyOptions = {}): Promise<ResolveApiKeyResult> {
     const label = opts.commandLabel || 'lgraph';
     const interactive = opts.interactive ?? true;
-
-    // If both --guest and --api-key, api-key wins
-    if (opts.guest && opts.apiKey) {
-        console.log(`[${label}] ⚠️  Both --guest and --api-key provided; using --api-key.`);
-    }
 
     // 1. Explicit --api-key flag
     if (opts.apiKey) {
@@ -56,56 +44,21 @@ export async function resolveApiKey(opts: ResolveApiKeyOptions = {}): Promise<Re
     // 2. Existing key in config
     const existingKey = getApiKey();
     if (existingKey) {
-        if (isGuestKey()) {
-            console.log(`[${label}] ✓ Guest key found\n`);
-        } else {
-            console.log(`[${label}] ✓ API key found\n`);
-        }
+        console.log(`[${label}] ✓ API key found\n`);
         return { apiKey: existingKey };
     }
 
-    // 3. --guest flag
-    if (opts.guest) {
-        return await doGuestFlow(label);
-    }
-
-    // 4. Interactive fallback
+    // 3. Interactive fallback — prompt for an API key
     if (interactive) {
-        const choice = await promptKeyChoice();
-        if (choice === 'paid') {
-            const apiKey = await promptApiKey();
-            setApiKey(apiKey);
-            console.log(`[${label}] ✓ API key saved\n`);
-            return { apiKey };
-        } else {
-            return await doGuestFlow(label);
-        }
+        const apiKey = await promptApiKey();
+        setApiKey(apiKey);
+        console.log(`[${label}] ✓ API key saved\n`);
+        return { apiKey };
     }
 
-    // 5. Non-interactive with no key
-    console.error(`\n❌ No API key found. Provide --api-key <key> or --guest.`);
+    // 4. Non-interactive with no key
+    console.error(`\n❌ No API key found. Provide --api-key <key>.`);
     process.exit(1);
-}
-
-async function doGuestFlow(label: string): Promise<ResolveApiKeyResult> {
-    console.log(`\n[${label}] Requesting guest session...`);
-    try {
-        const resp = await requestGuestKey();
-        setGuestKey(resp.api_key);
-        console.log(`[${label}] ✓ Guest session started\n`);
-
-        const result: ResolveApiKeyResult = { apiKey: resp.api_key };
-
-        // Guest endpoint may return a project_id
-        if (resp.project_id) {
-            result.projectId = resp.project_id;
-        }
-
-        return result;
-    } catch (error) {
-        console.error(`\n❌ Failed to get guest key: ${(error as Error).message}`);
-        process.exit(1);
-    }
 }
 
 export interface ResolveProjectOptions {

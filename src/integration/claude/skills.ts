@@ -11,12 +11,12 @@ import * as path from 'path';
 
 const SKILL_GUIDE_EXPLORING = `---
 name: lgraph-exploring
-description: "Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: \\"How does X work?\\", \\"What calls this?\\", \\"Explain this codebase\\", \\"What module owns this file?\\""
+description: "Loads architecture summaries, module docs, file metadata, and call chains from the Latentgraph DRG. Use when the user asks how code works, where something lives, what module owns a file, how a flow executes, or to explore an unfamiliar codebase. Triggers: \\"how does X work\\", \\"explain this codebase\\", \\"what calls this\\", \\"what module owns\\", \\"where is X defined\\", \\"trace this flow\\", architectural questions, onboarding."
 ---
 
 # Exploring Codebases with Latentgraph
 
-This project has **Latentgraph** configured — a DRG plus module documentation for the codebase. Use the lgraph MCP tools before manually reading or grepping indexed source files.
+This project has Latentgraph configured — a DRG plus module documentation for the codebase. Pick the smallest lgraph MCP tool that answers the question, chain outputs forward, and stop as soon as the answer is in hand. Reach for raw \`Grep\`/\`Read\` only when the metadata is insufficient.
 
 ## When to Use
 
@@ -25,88 +25,73 @@ This project has **Latentgraph** configured — a DRG plus module documentation 
 - "What module owns this file?"
 - "Show me the main subsystems"
 - "Where is the database logic?"
-- Understanding unfamiliar code before making changes
+- Onboarding into unfamiliar code before making changes
+
+## Reading TOON output
+
+Every read tool returns its payload inside a \`\`\`\`\`\`toon\`\`\`\`\`\` fenced block. (\`update_graph\` is the exception — plain text.) Format:
+
+- Scalars: \`key: value\`
+- Arrays: \`name[N]{col1,col2,col3}:\` declares row count and column header, followed by tab-delimited rows.
+- Read every field BY COLUMN NAME, not by position.
 
 ## Workflow
 
 \`\`\`
-1. mcp__lgraph__get_context(targets=["project"])              → Architecture summary and top-level modules
-2. mcp__lgraph__get_context(targets=["project"], depth=-1, include_files=true)  → Discover logical modules and owning files
-3. mcp__lgraph__get_context(targets=["..."])                 → Module docs, key files, and context
-4. mcp__lgraph__get_file({file_path: "..."})                 → File summary, symbols, endpoints, dependents
-5. mcp__lgraph__get_dependencies({file_path: "..."})         → Bidirectional relationships, imports, coupling
-6. mcp__lgraph__get_change_impact({file_path: "..."})        → Downstream blast radius
+1. Latentgraph:get_project_overview()                 → architecture + top-level modules
+2. Latentgraph:get_module_info(module_path="...")     → module docs, files, child modules. Rejects literal "project" — use get_project_overview for that.
+3. Latentgraph:get_file(file_path="...")              → file summary + key_symbols (each has an fqn ready for get_call_chain)
+4. Latentgraph:get_symbol(name="...")                 → locate a function/class/method by name; returns fqn(s)
+5. Latentgraph:get_call_chain(symbol="<fqn>")         → callers/callees for one symbol; direction ∈ callers|callees|both, depth 1-5
+6. Latentgraph:get_dependencies(file_path="...")      → file-level incoming (dependents) + outgoing (what it relies on); dedupe by (target, implicit)
+7. Latentgraph:ask_codebase(question="...")           → LLM-synthesized narrative across many files, with citations
 \`\`\`
 
-If you need broader context from \`get_file\`, use \`level=1\` or \`level=2\` for module ancestry and surrounding architecture.
-
-Important: \`mcp__lgraph__get_context\` accepts a \`targets\` array. Pass a file path or module name as the target.
+\`ask_codebase\` is rate-limited: 50/min, 500/day project-wide. Cap usage at 1-2 calls per task. Drill into citations with \`get_file\` afterwards.
 
 ## Checklist
 
-- [ ] Call \`get_context(targets=["project"])\` first for the big picture
-- [ ] Call \`get_context(targets=["project"], depth=-1, include_files=true)\` to locate the right subsystem
-- [ ] Call \`get_context\` on a module before treating a folder as a module boundary
-- [ ] Call \`get_file\` on key entry or integration files
-- [ ] Call \`get_dependencies\` on central files to understand relationships
-- [ ] Call \`get_change_impact\` when the user asks "what uses this?" or "what depends on this?"
-- [ ] Only \`Read\` raw files if the implementation details matter beyond the summaries
+- [ ] Call \`get_project_overview\` first for the big picture
+- [ ] Call \`get_module_info\` to drill into the right subsystem
+- [ ] Call \`get_file\` on key entry or integration files; reuse the \`fqn\` values it returns
+- [ ] Call \`get_dependencies\` on central files; read \`incoming\` for dependents, \`outgoing\` for what they rely on
+- [ ] Call \`get_call_chain\` when the question is about a specific function or method
+- [ ] Use \`ask_codebase\` only for cross-cutting narrative questions, max 1-2 per task
+- [ ] Only \`Read\` raw files if implementation details matter beyond the summaries
 
-## Critical Rules
+## Anti-patterns
 
-- **NEVER** answer a repo-wide architecture question from a single \`get_file\`.
-- **NEVER** use Grep/Glob as the first step for indexed source-file exploration.
-- Use \`get_context\` when the question is really about a subsystem, not a single file.
-- Use \`get_change_impact\` for "what calls this?" and \`get_dependencies\` for "what does this rely on?".
+- Grepping for a symbol's location — use \`get_symbol\`.
+- Asking \`ask_codebase\` "what does this file do" — that's \`get_file\`.
+- Repeated \`ask_codebase\` calls per task — rate-limited; chain cheap tools instead.
+- Passing literal \`"project"\` to \`get_module_info\` — use \`get_project_overview\`.
+- Passing a bare class identifier to \`get_call_chain\` — use \`<Class>.__init__\` or \`<Class>.<method>\`.
 
-## MANDATORY: Record Your Learnings
+## Symbol fqn format
 
-After exploring, you MUST record insights using \`mcp__lgraph__update_graph\`:
-
-\`\`\`
-7. mcp__lgraph__update_graph({
-     operation: "edit_file_summary" | "edit_module_doc" | "add_implicit_dependency",
-     ...params
-   })
-\`\`\`
-
-
-**Record when you discover:**
-- How a module actually works (beyond docs)
-- Hidden dependencies between components
-- Non-obvious architectural patterns
-- Edge cases or gotchas in the code
-
-**This builds institutional memory for future exploration sessions.**
+- Top-level function/class: \`<file>::<name>\` e.g. \`src/auth.py::login\`
+- Method: \`<file>::<Class>.<method>\` (dot, not \`::\`) e.g. \`src/auth.py::AuthService.refresh\`
 
 ## Example: "How does payment processing work?"
 
 \`\`\`
-1. mcp__lgraph__get_context(targets=["project"])
-   → Architecture summary and top-level modules
-
-2. mcp__lgraph__get_context(targets=["project"], depth=-1, include_files=true)
-   → Reveals payments-related modules and owning files
-
-3. mcp__lgraph__get_context(targets=["src/payments/processor.ts"])
-   → Module docs, key files, and context
-
-4. mcp__lgraph__get_file({file_path: "src/payments/processor.ts"})
-   → File summary, symbols, endpoints, dependents
-
-5. mcp__lgraph__get_dependencies({file_path: "src/payments/processor.ts"})
-   → Bidirectional relationships, imports, coupling
+1. get_project_overview()                                      → locates the "payments" module
+2. get_module_info(module_path="src/payments")                 → module docs, files, child modules
+3. get_file(file_path="src/payments/processor.ts")             → file summary, key_symbols with fqns
+4. get_dependencies(file_path="src/payments/processor.ts")     → incoming (who calls payments), outgoing (what payments calls)
 \`\`\`
+
+When the question genuinely spans many files (e.g. "how does idempotency work across the stack"), use \`ask_codebase\` once, then drill into cited files with \`get_file\`.
 `;
 
 const SKILL_GUIDE_EDITING = `---
 name: lgraph-editing
-description: "Use when the user wants to fix a bug, add a feature, update a component, refactor code, or make source changes. Examples: \\"Fix bug in X\\", \\"Add feature to Y\\", \\"Refactor this module\\", \\"Update this handler\\""
+description: "Walks Latentgraph context (file metadata, call chains, dependencies, PR-mined invariants) before code edits, then records corrections back via update_graph. Use when the user asks to fix a bug, add a feature, modify a function, refactor a module, change a handler, or otherwise touch indexed source code. Triggers: \\"fix\\", \\"add feature\\", \\"refactor\\", \\"update handler\\", \\"change function\\", \\"rename\\", any source-code modification."
 ---
 
 # Editing Code with Latentgraph
 
-This project has **Latentgraph** configured — a DRG plus module documentation for the codebase. Use the lgraph MCP tools to understand context and impact BEFORE making edits.
+This project has Latentgraph configured. Use the lgraph MCP tools to load context and assess blast radius BEFORE editing. Two distinct workflows depending on scope.
 
 ## When to Use
 
@@ -114,109 +99,83 @@ This project has **Latentgraph** configured — a DRG plus module documentation 
 - "Add feature to Y"
 - "Refactor this module"
 - "Update this handler"
+- "Change the signature of foo()"
 - Any task that modifies indexed source code
 
-## Workflow
+## Workflow — function-scope edit (changing one symbol's contract)
 
 \`\`\`
-1. mcp__lgraph__get_file({file_path: "target"})           → File summary, symbols, endpoints, dependents
-2. mcp__lgraph__get_dependencies({file_path: "target"})   → Bidirectional relationships, imports, coupling
-3. mcp__lgraph__get_change_impact({file_path: "target"})  → Downstream blast radius
-4. mcp__lgraph__get_context(targets=["target"])           → Module docs, key files, and context
-5. Read the exact code sections you need
-6. Make the edit
-7. Verify the directly affected files from get_change_impact
+1. Latentgraph:get_file(file_path="<file>")                                  → summary + key_symbols; grab the fqn of the symbol you're editing
+2. Latentgraph:get_call_chain(symbol="<fqn>", direction="callers")           → who breaks if you change the signature
+3. Latentgraph:get_pr_insights(target="<file>")                              → invariants and decisions for the file
+4. Read the exact code sections you need
+5. Edit
 \`\`\`
+
+## Workflow — file-scope edit (changing imports, contracts, shared helpers, module behavior)
+
+\`\`\`
+1. Latentgraph:get_file(file_path="<file>")                                  → summary + key_symbols
+2. Latentgraph:get_dependencies(file_path="<file>")                          → incoming (blast radius), outgoing (what you rely on); dedupe by (target, implicit)
+3. Latentgraph:get_pr_insights(target="<file>")                              → invariants and decisions
+4. Read the exact code sections you need
+5. Edit
+\`\`\`
+
+Pick the workflow by scope — don't run \`get_dependencies\` ahead of \`get_call_chain\` when the change is one function.
+
+## Recording learnings — update_graph
+
+\`update_graph\` is a write tool. It records a proposed change, returns \`applied: false\` plus a \`pending_edit_id\`, and only applies after owner approval. It has no idempotency — queuing the same edit twice creates two pending edits.
+
+Use it when you learn something the graph should know: a corrected file summary, a missed implicit dependency, a captured invariant, a false-positive edge worth ignoring.
+
+Operation enum (11):
+- \`edit_file_summary\` — refine a file's summary
+- \`edit_dependency_summary\` — explain why A depends on B
+- \`edit_module_doc\` — refine a module's documentation
+- \`add_dependency\` — record a missed explicit edge
+- \`delete_dependency\` — remove an incorrect explicit edge
+- \`add_dependent\` — record a missed reverse edge
+- \`delete_dependent\` — remove an incorrect reverse edge
+- \`add_implicit_dependency\` — record runtime/config/event coupling
+- \`edit_implicit_dependency\` — refine the description of an implicit edge
+- \`ignore_implicit_dependency\` — mark an implicit edge as a false positive
+- \`delete_implicit_dependency\` — remove an implicit edge
 
 ## Checklist
 
 - [ ] Call \`get_file\` before \`Read\`
-- [ ] Review the summary and module assignment
-- [ ] Call \`get_dependencies\` before changing imports, contracts, or shared helpers
-- [ ] Call \`get_change_impact\` before every non-trivial edit
-- [ ] Call \`get_context\` when the file sits in a shared module
+- [ ] Function-scope: call \`get_call_chain(direction="callers")\` on the target fqn
+- [ ] File-scope: call \`get_dependencies\` and read \`incoming\` as your blast radius
+- [ ] Call \`get_pr_insights\` before non-trivial edits
 - [ ] Read only the implementation you need
-- [ ] Re-check directly affected files after the edit
+- [ ] After edit, re-check the \`incoming\` list (file-scope) or callers (function-scope)
+- [ ] If you discovered an implicit edge, corrected a summary, or captured an invariant — \`update_graph\`
 
-## Critical Rules
+## Anti-patterns
 
-- **ALWAYS** call \`get_change_impact\` before editing indexed source files.
-- **ALWAYS** call \`get_file\` before \`Read\`.
-- **NEVER** use Grep to find importers or dependents as your first step.
-- Use \`get_context\` for module-wide refactors, not just \`get_file\`.
+- Grep-first for importers/callers — use \`get_dependencies\` or \`get_call_chain\`.
+- Reading the raw file before \`get_file\` — you may not need the read at all.
+- Running \`get_dependencies\` for a single-function edit — \`get_call_chain\` is narrower.
+- Passing a bare class identifier to \`get_call_chain\` — use \`<Class>.__init__\` or \`<Class>.<method>\`.
 
 ## Reading the Signals
 
-- \`get_file\` gives you file summary, symbols, endpoints, dependents.
-- \`get_dependencies\` tells you not just imports, but relationship type, imported names, reverse deps, and implicit coupling strength.
-- \`get_change_impact\` is your safety check before edits and refactors.
-`;
-
-const SKILL_GUIDE_IMPACT = `---
-name: lgraph-impact
-description: "Use when the user wants to know what will break if they change something, needs safety analysis before editing, or asks about dependents and coupling. Examples: \\"What depends on this?\\", \\"What will break?\\", \\"Is this safe to change?\\""
----
-
-# Impact Analysis with Latentgraph
-
-This project has **Latentgraph** configured — a DRG plus module documentation for the codebase. Use \`get_change_impact\`, \`get_dependencies\`, and \`get_context\` to assess change impact.
-
-## When to Use
-
-- "What depends on this?"
-- "What will break if I change X?"
-- "Is this safe to refactor?"
-- "Show me the blast radius"
-- Before major edits or risky refactors
-
-## Workflow
-
-\`\`\`
-1. mcp__lgraph__get_change_impact({file_path: "target"})  → Downstream blast radius
-2. mcp__lgraph__get_dependencies({file_path: "target"})   → Bidirectional relationships, imports, coupling
-3. mcp__lgraph__get_context(targets=["target"])           → Module docs, key files, and context
-4. mcp__lgraph__get_file({file_path: "target"})           → File summary, symbols, endpoints, dependents
-5. Assess risk and explain it to the user
-\`\`\`
-
-## Checklist
-
-- [ ] Review direct blast radius first
-- [ ] Separate explicit import edges from implicit runtime/config coupling
-- [ ] Call \`get_dependencies\` to see relationship types and imported names
-- [ ] Use \`get_context\` when impact spills across a module boundary
-- [ ] Use \`get_file\` to capture file role and module context before interpreting impact
-
-## Interpreting the Graph
-
-- **Explicit dependencies**: direct import/require relationships
-- **Implicit dependencies**: inferred runtime/config/event/shared-type coupling
-- **Coupling strength**: \`tight\`, \`moderate\`, \`loose\`, or \`unknown\`
-
-## Risk Heuristics
-
-| Signal | Risk |
-|-------|------|
-| Few direct dependents, single module | LOW |
-| Several direct dependents, 2-3 modules | MEDIUM |
-| Many dependents or shared core modules | HIGH |
-| Tight implicit coupling + shared utility/config role | CRITICAL |
-
-## Critical Rules
-
-- **NEVER** use Grep as the first method for finding importers or dependents.
-- **NEVER** ignore implicit coupling when evaluating safety.
-- For shared utilities and config-heavy code, inspect both \`get_change_impact\` and \`get_dependencies\` before recommending a change.
+- \`get_file\`: file summary, key_symbols (each with \`fqn\`), endpoints, dependents.
+- \`get_call_chain\`: \`unresolved: true\` means the symbol isn't in the graph; \`unresolved: false\` with empty arrays means indexed but no edges in that direction.
+- \`get_dependencies\`: bidirectional edges; \`implicit: true\` flags runtime/config coupling.
+- \`get_pr_insights\`: decisions and invariants ranked by severity/importance.
 `;
 
 const SKILL_GUIDE_DEBUGGING = `---
 name: lgraph-debugging
-description: "Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: \\"Why is X failing?\\", \\"Where does this error come from?\\", \\"Trace this bug\\", \\"Why did this change break Y?\\""
+description: "Traces failures through Latentgraph dependencies, call chains, module context, and PR-mined invariants before reading raw files. Use when the user is investigating a bug, regression, or unexpected behavior, or wants to find a root cause. Triggers: \\"why is X failing\\", \\"trace this bug\\", \\"where does this error come from\\", \\"why did this break\\", \\"who uses this code path\\", \\"root cause\\", debugging, regressions."
 ---
 
 # Debugging with Latentgraph
 
-This project has **Latentgraph** configured — a DRG plus module documentation for the codebase. Use lgraph MCP tools to trace bugs through dependencies and coupling instead of starting with raw grep.
+This project has Latentgraph configured. Trace bugs through the DRG before reading multiple raw files.
 
 ## When to Use
 
@@ -229,52 +188,54 @@ This project has **Latentgraph** configured — a DRG plus module documentation 
 ## Workflow
 
 \`\`\`
-1. mcp__lgraph__get_file({file_path: "suspect"})           → File summary, symbols, endpoints, dependents
-2. mcp__lgraph__get_dependencies({file_path: "suspect"})   → Bidirectional relationships, imports, coupling
-3. mcp__lgraph__get_context(targets=["suspect"])           → Module docs, key files, and context
-4. mcp__lgraph__get_file(...) on upstream/downstream files as needed
-5. mcp__lgraph__get_change_impact({file_path: "suspect"})  → Downstream blast radius
-6. Read the raw source only to confirm the exact root cause
+1. Latentgraph:get_file(file_path="<suspect>")                              → file summary + key_symbols
+2. Latentgraph:get_symbol(name="<failing symbol>")                          → resolve to fqn if not already known
+3. Latentgraph:get_call_chain(symbol="<fqn>", direction="callees", depth=2) → walk down toward the leaf; switch to "callers" to walk up
+4. Latentgraph:get_dependencies(file_path="<suspect>")                      → bidirectional edges, including \`implicit: true\` (config/event/runtime)
+5. Latentgraph:get_pr_insights(target="<suspect>")                          → invariants the bug may be violating
+6. Latentgraph:ask_codebase(question="...")                                 → only for cross-cutting "how does this whole flow work" questions; 50/min, 500/day rate limit, cap at 1-2 per task
+7. Read raw source to confirm root cause
 \`\`\`
 
 ## Checklist
 
 - [ ] Start with the file where the symptom appears
-- [ ] Use \`get_dependencies\` before manual import chasing
-- [ ] Inspect implicit coupling if the failure crosses config/runtime boundaries
-- [ ] Use \`get_context\` when the issue is broader than one file
-- [ ] Use \`get_change_impact\` before proposing or applying the fix
+- [ ] Resolve failing names to fqns with \`get_symbol\` before \`get_call_chain\`
+- [ ] Inspect edges with \`implicit: true\` if the failure crosses config/runtime boundaries
+- [ ] Use \`get_call_chain\` to narrow in on a failing function
+- [ ] Use \`get_pr_insights\` to surface invariants the bug may be violating
+- [ ] Use \`ask_codebase\` sparingly for cross-cutting "how does this flow work" questions
+- [ ] Read raw source only to confirm the exact root cause
 
-## Critical Rules
+## Recording the root cause
 
-- **NEVER** start by grepping the whole repo for function names or error strings when a suspect file is known.
-- **ALWAYS** use \`get_dependencies\` to follow relationships before reading multiple raw files.
-- **ALWAYS** check \`get_change_impact\` before changing the fix target.
+After diagnosis, record what you learned with \`update_graph\` so future sessions don't re-derive it:
 
-## MANDATORY: Record Your Findings
+- \`edit_file_summary\` — file-level note ("EDGE CASE: refresh silently fails when Redis is down")
+- \`add_implicit_dependency\` — capture a hidden runtime edge that contributed
+- \`edit_dependency_summary\` — explain why A actually depends on B
+- \`edit_module_doc\` — module-wide invariant or gotcha
 
-After debugging, you MUST record what you learned using \`mcp__lgraph__update_graph\`:
+\`update_graph\` returns \`applied: false\` + \`pending_edit_id\`. The edit goes live after owner approval. No idempotency — don't queue the same edit twice.
 
-\`\`\`
-7. mcp__lgraph__update_graph({
-     operation: "edit_file_summary",
-     file_path: "the-buggy-file.py",
-     summary: "BUG ROOT CAUSE: [describe what caused the bug and how to avoid it]"
-   })
-\`\`\`
+## Anti-patterns
 
-**What to record:**
-- Root cause of the bug
-- Edge cases that triggered the failure
-- Non-obvious dependencies that contributed
-- How to prevent similar bugs
+- Repo-wide grep when the suspect file is known — start with \`get_file\`.
+- Reading multiple raw files before checking \`get_dependencies\` — the edges narrow the search.
+- Passing a bare class identifier to \`get_call_chain\` — use \`<Class>.__init__\` or \`<Class>.<method>\`.
+- Asking \`ask_codebase\` "what does this file do" — that's \`get_file\`.
 
-**This builds institutional memory so future debugging sessions benefit from your findings.**
+## Interpreting signals
+
+- \`get_call_chain\` \`unresolved: true\` → fqn isn't in the graph (check spelling, try \`get_symbol\`).
+- \`get_call_chain\` \`unresolved: false\` + empty arrays → indexed but no edges in that direction (likely a leaf or entry point).
+- \`get_dependencies\` may list the same target twice (implicit + explicit). Dedupe by \`(target, implicit)\`.
+- \`degraded: true\` on any tool → some optional fields empty; fall back to \`Read\` or \`ask_codebase\`.
 `;
 
 const SKILL_GUIDE_CLI = `---
 name: lgraph-cli
-description: "Use when the user needs to run Latentgraph CLI commands like initialize a repo, trigger a full re-scan, check status, or configure the MCP server. Examples: \\"Index this repo\\", \\"Refresh the DRG\\", \\"Check lgraph status\\", \\"Configure Claude Code\\""
+description: "Runs Latentgraph CLI commands for repo initialization, status checks, re-indexing, daemon control, and Claude Code integration setup. Use when the user wants to index a repo, refresh the DRG, check lgraph status, start/stop the daemon, or configure Claude Code. Triggers: \\"lgraph init\\", \\"index this repo\\", \\"refresh the DRG\\", \\"lgraph status\\", \\"re-scan\\", \\"configure Claude Code\\", stale MCP results."
 ---
 
 # Latentgraph CLI Reference
@@ -305,9 +266,9 @@ description: "Use when the user needs to run Latentgraph CLI commands like initi
 
 ## Important Notes
 
-- Use a full re-scan with \`lgraph init --force\` when you need to refresh DRG + Wiki outputs.
+- Use \`lgraph init --force\` for a full re-scan when DRG + Wiki outputs need refreshing; there is no incremental refresh command.
 - The MCP knowledge graph only indexes source files: .js .jsx .ts .tsx .py .java .cpp .cs .go .c .h .css .scss .html
-- Non-source files (.json, .yaml, .md, .env, etc.) are not indexed; read them directly with normal tools.
+- Non-source files (.json, .yaml, .md, .env, etc.) are not indexed; read them with normal tools.
 `;
 
 const AGENT_GUIDE_EXPLORING = `---
@@ -318,22 +279,25 @@ disallowedTools: Edit, Write, NotebookEdit
 
 You are a code exploration specialist for this project.
 
-Use Latentgraph MCP as the primary interface to indexed source files. Work module-first, then file-first, and only read raw code when MCP results are insufficient for the user's question.
+Use Latentgraph MCP as the primary interface to indexed source files. Work module-first, then file-first, and only read raw code when MCP results are insufficient.
+
+Every read tool returns its payload inside a \`\`\`toon\`\`\` fenced block. Scalars are \`key: value\`; arrays declare \`name[N]{col1,col2,col3}:\` followed by tab-delimited rows. Read fields by column name.
 
 Follow this workflow:
-1. Start with \`mcp__lgraph__get_context(targets=["project"])\` for the architecture summary and top-level modules.
-2. Call \`mcp__lgraph__get_context(targets=["project"], depth=-1, include_files=true)\` to locate the relevant subsystem and owning files.
-3. Call \`mcp__lgraph__get_context(targets=["..."])\` on the most relevant file in that subsystem to load module docs, key files, and context.
-4. Call \`mcp__lgraph__get_file({ file_path: "..." })\` for the files that appear central to the question.
-5. Call \`mcp__lgraph__get_dependencies({ file_path: "..." })\` when you need bidirectional relationships, imports, or coupling details.
-6. Call \`mcp__lgraph__get_change_impact({ file_path: "..." })\` when the user asks who depends on something or what downstream areas it influences.
-7. Use raw \`Read\` only for implementation details that MCP summaries do not cover.
+1. Start with \`mcp__lgraph__get_project_overview()\` for the architecture summary and top-level modules.
+2. Call \`mcp__lgraph__get_module_info({ module_path: "..." })\` to drill into the relevant subsystem. Do not pass the literal \`"project"\` — use \`get_project_overview\` instead.
+3. Call \`mcp__lgraph__get_file({ file_path: "..." })\` for files central to the question; reuse the \`fqn\` values from \`key_symbols\`.
+4. Call \`mcp__lgraph__get_symbol({ name: "..." })\` when the question is about a specific function or class.
+5. Call \`mcp__lgraph__get_call_chain({ symbol: "<fqn>" })\` to trace callers/callees. Use \`direction: "callers" | "callees"\` to halve response noise. Do not pass a bare class identifier — use \`<Class>.__init__\` or \`<Class>.<method>\`.
+6. Call \`mcp__lgraph__get_dependencies({ file_path: "..." })\` for bidirectional file-level relationships. \`incoming\` is dependents, \`outgoing\` is what it relies on.
+7. Call \`mcp__lgraph__ask_codebase({ question: "..." })\` only for cross-cutting narrative questions. Rate-limited: 50/min, 500/day project-wide. Cap at 1-2 per task; drill into citations afterwards.
+8. Use raw \`Read\` only for implementation details MCP summaries don't cover.
 
 Apply these rules:
 - Do not begin with Grep, Glob, or raw file reads for indexed source-code questions.
 - Do not answer architecture or ownership questions from a single file.
-- Prefer \`get_context\` over multiple sibling file reads when the question is subsystem-scoped.
-- Use \`get_file(level=1)\` or \`get_file(level=2)\` when the file needs broader module ancestry context.
+- Prefer \`get_module_info\` over multiple sibling file reads when the question is subsystem-scoped.
+- Do not use \`ask_codebase\` to answer "what does this file do" — that's \`get_file\`.
 `;
 
 const AGENT_GUIDE_EDITING = `---
@@ -344,48 +308,32 @@ disallowedTools: NotebookEdit
 
 You are a code editing specialist for this project.
 
-Use Latentgraph MCP to understand the target before changing code. Read only the implementation you need, then edit with clear awareness of direct and indirect impact.
+Use Latentgraph MCP to understand the target before changing code, then read only the implementation you need.
 
-Follow this workflow:
-1. Call \`mcp__lgraph__get_file({ file_path: "target" })\` before reading or editing the target file.
-2. Review the file's summary, symbols, endpoints, and dependents.
-3. Call \`mcp__lgraph__get_dependencies({ file_path: "target" })\` before changing imports, contracts, shared helpers, or interfaces.
-4. Call \`mcp__lgraph__get_change_impact({ file_path: "target" })\` before making any non-trivial source edit.
-5. Call \`mcp__lgraph__get_context(targets=["target"])\` when the change affects shared module behavior, not just a single file.
-6. Read the exact source needed to implement the change.
-7. Make the smallest coherent edit that solves the task.
-8. Re-check directly affected files from \`get_change_impact\` and validate the change.
+Pick the workflow by scope.
+
+Function-scope edit (changing one symbol's contract):
+1. Call \`mcp__lgraph__get_file({ file_path: "<file>" })\`. Grab the target \`fqn\` from \`key_symbols\`.
+2. Call \`mcp__lgraph__get_call_chain({ symbol: "<fqn>", direction: "callers" })\` to see who breaks.
+3. Call \`mcp__lgraph__get_pr_insights({ target: "<file>" })\` for invariants.
+4. Read the exact source needed.
+5. Edit.
+
+File-scope edit (imports, contracts, shared helpers, module behavior):
+1. Call \`mcp__lgraph__get_file({ file_path: "<file>" })\`.
+2. Call \`mcp__lgraph__get_dependencies({ file_path: "<file>" })\`. \`incoming\` is your blast radius. Dedupe by \`(target, implicit)\`.
+3. Call \`mcp__lgraph__get_pr_insights({ target: "<file>" })\`.
+4. Read the exact source needed.
+5. Edit.
+
+Record learnings with \`mcp__lgraph__update_graph\` when you discover something the graph should know — a corrected summary, a missed implicit edge, a captured invariant. It is a write tool: returns \`applied: false\` + \`pending_edit_id\`, applies after owner approval, no idempotency. Operations: \`edit_file_summary\`, \`edit_dependency_summary\`, \`edit_module_doc\`, \`add_dependency\`, \`delete_dependency\`, \`add_dependent\`, \`delete_dependent\`, \`add_implicit_dependency\`, \`edit_implicit_dependency\`, \`ignore_implicit_dependency\`, \`delete_implicit_dependency\`.
 
 Apply these rules:
 - Always use \`get_file\` before raw \`Read\`.
-- Always use \`get_change_impact\` before a non-trivial edit or refactor.
+- Function-scope: \`get_call_chain\` before edit. File-scope: \`get_dependencies\` before edit. Don't flip the order.
 - Do not use Grep as your first step to find dependents or callers.
-- Use \`get_context\` for module-scoped refactors instead of treating a directory as a guessed module boundary.
-`;
-
-const AGENT_GUIDE_IMPACT = `---
-name: lgraph-impact
-description: "Assess change safety, downstream impact, and coupling before edits or refactors."
-disallowedTools: Edit, Write, NotebookEdit
----
-
-You are a change-impact analysis specialist for this project.
-
-Your job is to estimate what will be affected by a change, including both explicit dependency edges and implicit runtime or configuration coupling.
-
-Follow this workflow:
-1. Call \`mcp__lgraph__get_change_impact({ file_path: "target" })\` first to identify downstream blast radius.
-2. Call \`mcp__lgraph__get_dependencies({ file_path: "target" })\` to inspect bidirectional relationships, imports, and coupling.
-3. Call \`mcp__lgraph__get_context(targets=["target"])\` when impact crosses module boundaries or the file is a shared module anchor.
-4. Call \`mcp__lgraph__get_file({ file_path: "target" })\` to capture the file summary, symbols, endpoints, and dependents.
-5. Separate direct import relationships from inferred coupling in your explanation.
-6. Explain risk clearly as low, medium, high, or critical, with the concrete reasons.
-
-Apply these rules:
-- Do not mutate files.
-- Do not ignore implicit dependencies when evaluating safety.
-- Do not use Grep as the first method for finding importers or dependents.
-- Treat shared utilities, config-heavy code, and central module files as higher-risk by default.
+- Do not pass a bare class identifier to \`get_call_chain\` — use \`<Class>.__init__\` or \`<Class>.<method>\`.
+- Use \`get_module_info\` for module-scoped refactors.
 `;
 
 const AGENT_GUIDE_DEBUGGING = `---
@@ -396,21 +344,24 @@ disallowedTools: Edit, Write, NotebookEdit
 
 You are a debugging specialist for this project.
 
-Trace bugs through the DRG before reading multiple raw files. Use Latentgraph to identify the suspect file's role, upstream dependencies, reverse dependents, and subsystem context.
+Trace bugs through the DRG before reading multiple raw files.
 
 Follow this workflow:
-1. Start from the known failing or suspect file and call \`mcp__lgraph__get_file({ file_path: "suspect" })\`.
-2. Call \`mcp__lgraph__get_dependencies({ file_path: "suspect" })\` to follow bidirectional relationships, imports, and implicit coupling.
-3. Call \`mcp__lgraph__get_context(targets=["suspect"])\` if the issue appears to span multiple files in the same subsystem.
-4. Call additional \`mcp__lgraph__get_file({ file_path: "..." })\` queries for the most relevant upstream and downstream files.
-5. Call \`mcp__lgraph__get_change_impact({ file_path: "suspect" })\` before recommending a fix so you can explain what else might break.
-6. Read raw source only to confirm the root cause once the likely path is narrowed down.
+1. Start with the suspect file: \`mcp__lgraph__get_file({ file_path: "<suspect>" })\`.
+2. Resolve failing names to fqns: \`mcp__lgraph__get_symbol({ name: "..." })\`.
+3. Walk the call graph: \`mcp__lgraph__get_call_chain({ symbol: "<fqn>", direction: "callees", depth: 2 })\` toward leaves, or \`"callers"\` to walk up. Do not pass bare class identifiers.
+4. Inspect coupling: \`mcp__lgraph__get_dependencies({ file_path: "<suspect>" })\`. Check edges with \`implicit: true\` when failures cross config/runtime boundaries.
+5. Check invariants: \`mcp__lgraph__get_pr_insights({ target: "<suspect>" })\`.
+6. For cross-cutting "how does this whole flow work" questions, use \`mcp__lgraph__ask_codebase({ question: "..." })\`. Rate-limited 50/min, 500/day; cap at 1-2 per task.
+7. Read raw source to confirm root cause once the path is narrowed.
+
+After diagnosis, record the root cause with \`mcp__lgraph__update_graph\` so future sessions don't re-derive it. Operations: \`edit_file_summary\` (file-level note), \`add_implicit_dependency\` (hidden runtime edge), \`edit_module_doc\` (module-wide gotcha). It is a write tool, returns \`applied: false\` + \`pending_edit_id\`, applies after owner approval, no idempotency.
 
 Apply these rules:
-- Do not mutate files.
+- Do not mutate source files.
 - Do not begin with repo-wide grep when a suspect file is known.
-- Use dependency and blast-radius data before proposing a fix.
-- Check implicit coupling whenever failures cross configuration, runtime wiring, or event boundaries.
+- Check \`implicit: true\` edges whenever failures cross configuration, runtime wiring, or event boundaries.
+- Do not pass a bare class identifier to \`get_call_chain\`.
 `;
 
 const AGENT_GUIDE_CLI = `---
@@ -421,7 +372,7 @@ disallowedTools: Edit, Write, NotebookEdit
 
 You are a Latentgraph CLI specialist for this project.
 
-Use Bash to operate the CLI safely. Prefer status checks before destructive or expensive operations, and use full re-scans rather than any incremental DRG refresh flow.
+Use Bash to operate the CLI safely. Prefer status checks before destructive or expensive operations. Use full re-scans rather than any incremental DRG refresh flow.
 
 Follow this workflow:
 1. Use \`lgraph status\` to inspect API key state, project id, indexing state, daemon status, and websocket connectivity.
@@ -440,36 +391,43 @@ Apply these rules:
 
 const SKILL_GUIDE_REMEMBER = `---
 name: lgraph-remember
-description: "Use PROACTIVELY after exploring code, debugging, or completing tasks to record learnings. Also use when the user says 'remember this', 'save this insight', or when you discover edge cases, bugs, or non-obvious behaviors."
+description: "Records learnings back to the Latentgraph DRG via update_graph after exploration, debugging, or completing tasks. Use proactively when the agent discovers edge cases, hidden dependencies, root causes, or non-obvious behavior worth preserving. Triggers: \\"remember this\\", \\"save this insight\\", finished debugging, found a root cause, discovered an implicit edge, surprising behavior."
 ---
 
 # Recording Learnings with Latentgraph Memory
 
-This skill helps you record insights and learnings discovered during code exploration. **Use this proactively** — don't wait to be asked.
+This skill records insights back to the DRG using \`update_graph\`. Use it proactively — don't wait to be asked.
 
-## When to Use (MANDATORY Triggers)
+## update_graph — what it is
 
-You MUST use this skill when:
+A write tool. Records a proposed change, returns \`applied: false\` plus a \`pending_edit_id\`, and applies only after a project owner approves. No idempotency — queuing the same edit twice creates two pending edits.
 
-- You discovered an **edge case or bug** in a file
-- You found a **hidden dependency** (Redis, events, config coupling)
-- You understood **WHY** code is written a certain way
-- You learned **how a module works** beyond its existing docs
-- You traced a **non-obvious connection** between files
-- You found something that **surprised you**
+## When to Use
+
+- Discovered an edge case or bug in a file
+- Found a hidden dependency (Redis channel, event bus, config coupling)
+- Understood WHY code is written a certain way
+- Learned how a module works beyond its existing docs
+- Traced a non-obvious connection between files
+- Found something surprising
+- Finished debugging and located the root cause
 - The user says "remember this" or "save this"
-- You finish debugging and found the **root cause**
 
-## Recording Operations
+## Operations (11)
 
 | Operation | When to Use | Required Params |
 |-----------|-------------|-----------------|
-| \`edit_file_summary\` | Add insight about a specific file | \`file_path\`, \`summary\` |
-| \`edit_module_doc\` | Add insight about a module | \`module_name\`, \`content\` |
+| \`edit_file_summary\` | Refine a file's summary | \`file_path\`, \`summary\` |
 | \`edit_dependency_summary\` | Explain why A depends on B | \`file_path\`, \`dependency_path\`, \`summary\` |
-| \`add_implicit_dependency\` | Found runtime coupling | \`source_file\`, \`dep_file\`, \`edge_summary\` |
-| \`add_dependency\` | Found missing explicit dependency | \`file_path\`, \`dependency_path\` |
-| \`ignore_implicit_dependency\` | Mark as false positive | \`source_file\`, \`dep_file\` |
+| \`edit_module_doc\` | Refine a module's documentation | \`module_name\`, \`content\` |
+| \`add_dependency\` | Record a missed explicit edge | \`file_path\`, \`dependency_path\` |
+| \`delete_dependency\` | Remove an incorrect explicit edge | \`file_path\`, \`dependency_path\` |
+| \`add_dependent\` | Record a missed reverse edge | \`file_path\`, \`dependent_path\` |
+| \`delete_dependent\` | Remove an incorrect reverse edge | \`file_path\`, \`dependent_path\` |
+| \`add_implicit_dependency\` | Record runtime/config/event coupling | \`source_file\`, \`dep_file\`, \`edge_summary\` |
+| \`edit_implicit_dependency\` | Refine an implicit edge's description | \`source_file\`, \`dep_file\`, \`edge_summary\` |
+| \`ignore_implicit_dependency\` | Mark an implicit edge as false positive | \`source_file\`, \`dep_file\` |
+| \`delete_implicit_dependency\` | Remove an implicit edge | \`source_file\`, \`dep_file\` |
 
 ## Workflow
 
@@ -480,10 +438,11 @@ You MUST use this skill when:
    - File-specific insight → edit_file_summary
    - Module-level insight → edit_module_doc
    - Relationship insight → edit_dependency_summary or add_implicit_dependency
+   - False positive → ignore_implicit_dependency
 
 3. Call mcp__lgraph__update_graph with the operation and params
 
-4. Confirm the learning was recorded
+4. Confirm the pending_edit_id and stop — don't re-queue
 \`\`\`
 
 ## Examples
@@ -518,29 +477,24 @@ mcp__lgraph__update_graph({
 
 ## What Makes a Good Learning?
 
-| GOOD (Record This) | BAD (Skip This) |
-|--------------------|-----------------|
+| Record this | Skip this |
+|-------------|-----------|
 | "Fails silently if config.X missing" | "Processes data" |
 | "Must call init() before other methods" | "Has several methods" |
 | "A triggers B via Redis on channel X" | "A and B are related" |
-| "NEVER modify without updating cache" | "Important code" |
+| "Never modify without updating cache" | "Important code" |
 
 ## Checklist Before Ending a Session
 
-- [ ] Did I explore any files? → Record what I learned
-- [ ] Did I debug an issue? → Record the root cause
-- [ ] Did I trace a flow? → Record the connections
-- [ ] Did something surprise me? → Record that insight
-
-## Critical Rule
-
-**If you learned something and didn't record it, that knowledge is LOST.** Future sessions won't have access to your insights. Always err on the side of recording too much rather than too little.
+- [ ] Explored files? Record what was learned.
+- [ ] Debugged an issue? Record the root cause.
+- [ ] Traced a flow? Record the connections.
+- [ ] Something surprised you? Record that insight.
 `;
 
 const SKILL_GUIDES: Record<string, string> = {
     'lgraph-exploring': SKILL_GUIDE_EXPLORING,
     'lgraph-editing': SKILL_GUIDE_EDITING,
-    'lgraph-impact': SKILL_GUIDE_IMPACT,
     'lgraph-debugging': SKILL_GUIDE_DEBUGGING,
     'lgraph-cli': SKILL_GUIDE_CLI,
     'lgraph-remember': SKILL_GUIDE_REMEMBER,
@@ -549,7 +503,6 @@ const SKILL_GUIDES: Record<string, string> = {
 const AGENT_GUIDES: Record<string, string> = {
     'lgraph-exploring': AGENT_GUIDE_EXPLORING,
     'lgraph-editing': AGENT_GUIDE_EDITING,
-    'lgraph-impact': AGENT_GUIDE_IMPACT,
     'lgraph-debugging': AGENT_GUIDE_DEBUGGING,
     'lgraph-cli': AGENT_GUIDE_CLI,
 };

@@ -65,7 +65,6 @@ const EXPECTED_GUIDES = [
     'lgraph-debugging',
     'lgraph-editing',
     'lgraph-exploring',
-    'lgraph-impact',
 ];
 
 describe('generateSkillFiles', () => {
@@ -115,8 +114,19 @@ describe('generateSkillFiles', () => {
             path.join(tmpDir, '.claude', 'skills', 'lgraph-exploring', 'SKILL.md'),
             'utf-8',
         );
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(exploring.includes(tool), `lgraph-exploring should reference ${tool}`);
+        }
+    });
+
+    it('every skill references ask_codebase as the narrative-question escape hatch', () => {
+        generateSkillFiles(tmpDir);
+        for (const name of EXPECTED_GUIDES) {
+            const content = fs.readFileSync(
+                path.join(tmpDir, '.claude', 'skills', name, 'SKILL.md'),
+                'utf-8',
+            );
+            assert.ok(content.includes('ask_codebase'), `${name}: should reference ask_codebase`);
         }
     });
 });
@@ -138,7 +148,7 @@ describe('generateCodexAgentsMd', () => {
         createAgentsMd(tmpDir);
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
 
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `AGENTS.md should reference ${tool}`);
         }
         assert.ok(!content.includes('update-drg'));
@@ -164,6 +174,14 @@ describe('generateCodexAgentsMd', () => {
         const content = fs.readFileSync(agentsMdPath, 'utf-8');
         assert.ok(content.includes('# My Custom Instructions'));
         assert.ok(content.includes('Latentgraph MCP Tools'));
+    });
+
+    it('references update_graph and the TOON response format', async () => {
+        const { createAgentsMd } = await import('../codex/agents-md.js');
+        createAgentsMd(tmpDir);
+        const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+        assert.ok(content.includes('update_graph'), 'AGENTS.md should reference update_graph');
+        assert.ok(/toon/i.test(content), 'AGENTS.md should describe the TOON response format');
     });
 });
 describe('setupCodexIntegration', () => {
@@ -203,7 +221,7 @@ describe('createLatentCodeAgentsMd', () => {
         createAgentsMd(tmpDir);
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
 
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `AGENTS.md should reference ${tool}`);
         }
         assert.ok(!content.includes('update-drg'));
@@ -236,11 +254,19 @@ describe('createLatentCodeAgentsMd', () => {
         createAgentsMd(tmpDir);
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
 
-        for (const agent of ['@lgraph-exploring', '@lgraph-editing', '@lgraph-impact', '@lgraph-debugging', '@lgraph-cli']) {
+        for (const agent of ['@lgraph-exploring', '@lgraph-editing', '@lgraph-debugging', '@lgraph-cli']) {
             assert.ok(content.includes(agent), `AGENTS.md should reference ${agent}`);
         }
         assert.ok(content.includes('NEVER'));
         assert.ok(content.includes('ALWAYS'));
+    });
+
+    it('references update_graph and the TOON response format', async () => {
+        const { createAgentsMd } = await import('../latent-code/instructions.js');
+        createAgentsMd(tmpDir);
+        const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+        assert.ok(content.includes('update_graph'), 'AGENTS.md should reference update_graph');
+        assert.ok(/toon/i.test(content), 'AGENTS.md should describe the TOON response format');
     });
 });
 
@@ -267,7 +293,7 @@ describe('setupLatentCodeIntegration', () => {
         await setupLatentCodeIntegration(tmpDir, { hasUserConsent: true });
 
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
-        for (const tool of ['get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `AGENTS.md should reference ${tool}`);
         }
     });
@@ -290,7 +316,7 @@ describe('createOpencodeAgentsMd', () => {
         createAgentsMd(tmpDir);
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
 
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `AGENTS.md should reference ${tool}`);
         }
         assert.ok(!content.includes('update-drg'));
@@ -323,11 +349,19 @@ describe('createOpencodeAgentsMd', () => {
         createAgentsMd(tmpDir);
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
 
-        for (const agent of ['@lgraph-exploring', '@lgraph-editing', '@lgraph-impact', '@lgraph-debugging', '@lgraph-cli']) {
+        for (const agent of ['@lgraph-exploring', '@lgraph-editing', '@lgraph-debugging', '@lgraph-cli']) {
             assert.ok(content.includes(agent), `AGENTS.md should reference ${agent}`);
         }
         assert.ok(content.includes('NEVER'));
         assert.ok(content.includes('ALWAYS'));
+    });
+
+    it('references update_graph and the TOON response format', async () => {
+        const { createAgentsMd } = await import('../opencode/instructions.js');
+        createAgentsMd(tmpDir);
+        const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+        assert.ok(content.includes('update_graph'), 'AGENTS.md should reference update_graph');
+        assert.ok(/toon/i.test(content), 'AGENTS.md should describe the TOON response format');
     });
 });
 
@@ -354,7 +388,7 @@ describe('setupOpencodeIntegration', () => {
         await setupOpencodeIntegration(tmpDir, { hasUserConsent: true });
 
         const content = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
-        for (const tool of ['get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `AGENTS.md should reference ${tool}`);
         }
     });
@@ -397,8 +431,7 @@ describe('generateAgentFiles', () => {
 
         const readOnlyAgents = [
             'lgraph-exploring',
-            'lgraph-impact',
-            'lgraph-debugging',
+                    'lgraph-debugging',
             'lgraph-cli',
         ];
 
@@ -586,11 +619,18 @@ describe('createClaudeMd', () => {
         createClaudeMd(tmpDir);
         const content = fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `CLAUDE.md should reference ${tool}`);
         }
         assert.ok(!content.includes('update-drg'));
         assert.ok(content.includes('lgraph init --force'));
+    });
+
+    it('references update_graph and the TOON response format', () => {
+        createClaudeMd(tmpDir);
+        const content = fs.readFileSync(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+        assert.ok(content.includes('update_graph'), 'CLAUDE.md should reference update_graph');
+        assert.ok(/toon/i.test(content), 'CLAUDE.md should describe the TOON response format');
     });
 });
 
@@ -599,7 +639,6 @@ const EXPECTED_COPILOT_SKILLS = [
     'lgraph-debugging',
     'lgraph-editing',
     'lgraph-exploring',
-    'lgraph-impact',
 ];
 
 describe('generateCopilotSkillFiles', () => {
@@ -638,7 +677,7 @@ describe('generateCopilotSkillFiles', () => {
             path.join(tmpDir, '.github', 'skills', 'lgraph-exploring', 'SKILL.md'),
             'utf-8',
         );
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(exploring.includes(tool), `lgraph-exploring should reference ${tool}`);
         }
 
@@ -649,6 +688,17 @@ describe('generateCopilotSkillFiles', () => {
         assert.ok(cli.includes('lgraph init --force'));
         assert.ok(cli.includes('lgraph add copilot'));
         assert.ok(!cli.includes('lgraph add claude-code'));
+    });
+
+    it('every skill references ask_codebase as the narrative-question escape hatch', () => {
+        generateCopilotSkillFiles(tmpDir);
+        for (const name of EXPECTED_COPILOT_SKILLS) {
+            const content = fs.readFileSync(
+                path.join(tmpDir, '.github', 'skills', name, 'SKILL.md'),
+                'utf-8',
+            );
+            assert.ok(content.includes('ask_codebase'), `${name}: should reference ask_codebase`);
+        }
     });
 });
 
@@ -700,7 +750,7 @@ describe('createCopilotInstructions', () => {
             'utf-8',
         );
 
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(content.includes(tool), `copilot-instructions should reference ${tool}`);
         }
     });
@@ -724,6 +774,16 @@ describe('createCopilotInstructions', () => {
         );
         const count = (content.match(/<!-- lgraph-mcp-instructions -->/g) ?? []).length;
         assert.equal(count, 1, 'section marker must appear exactly once');
+    });
+
+    it('references update_graph and the TOON response format', () => {
+        createCopilotInstructions(tmpDir);
+        const content = fs.readFileSync(
+            path.join(tmpDir, '.github', 'copilot-instructions.md'),
+            'utf-8',
+        );
+        assert.ok(content.includes('update_graph'), 'copilot-instructions should reference update_graph');
+        assert.ok(/toon/i.test(content), 'copilot-instructions should describe the TOON response format');
     });
 });
 
@@ -925,7 +985,7 @@ describe('setupClaudeCodeIntegration', () => {
             'utf-8',
         );
 
-        for (const tool of ['get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(claudeMd.includes(tool), `CLAUDE.md should reference ${tool}`);
         }
         assert.ok(settings.includes('Grep|Glob|Read|Bash'));
@@ -974,7 +1034,7 @@ describe('setupCopilotIntegration', () => {
             fs.readFileSync(path.join(tmpDir, '.github', 'hooks', 'hooks.json'), 'utf-8'),
         );
 
-        for (const tool of ['get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(instructions.includes(tool), `copilot-instructions should reference ${tool}`);
         }
         assert.ok(Array.isArray(hooksConfig.hooks.preToolUse), 'hooks.json preToolUse should be an array');
@@ -1024,7 +1084,6 @@ const EXPECTED_KIRO_SKILLS = [
     'lgraph-debugging',
     'lgraph-editing',
     'lgraph-exploring',
-    'lgraph-impact',
 ];
 
 describe('generateKiroSkillFiles', () => {
@@ -1074,7 +1133,7 @@ describe('generateKiroSkillFiles', () => {
             path.join(tmpDir, '.kiro', 'skills', 'lgraph-exploring', 'SKILL.md'),
             'utf-8',
         );
-        for (const tool of ['get_context', 'get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_project_overview', 'get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(exploring.includes(tool), `lgraph-exploring should reference ${tool}`);
         }
 
@@ -1094,6 +1153,17 @@ describe('generateKiroSkillFiles', () => {
         const second = generateKiroSkillFiles(tmpDir);
         assert.equal(second.created.length, 0);
         assert.equal(second.updated.length, 5);
+    });
+
+    it('every skill references ask_codebase as the narrative-question escape hatch', () => {
+        generateKiroSkillFiles(tmpDir);
+        for (const name of EXPECTED_KIRO_SKILLS) {
+            const content = fs.readFileSync(
+                path.join(tmpDir, '.kiro', 'skills', name, 'SKILL.md'),
+                'utf-8',
+            );
+            assert.ok(content.includes('ask_codebase'), `${name}: should reference ask_codebase`);
+        }
     });
 });
 
@@ -1357,11 +1427,23 @@ describe('setupKiroIntegration', () => {
             fs.readFileSync(path.join(tmpDir, '.kiro', 'agents', 'lgraph.json'), 'utf-8'),
         );
 
-        for (const tool of ['get_file', 'get_dependencies', 'get_change_impact']) {
+        for (const tool of ['get_file', 'get_dependencies', 'get_pr_insights']) {
             assert.ok(agentsMd.includes(tool), `AGENTS.md should reference ${tool}`);
             assert.ok(steeringMd.includes(tool), `.kiro/steering/lgraph.md should reference ${tool}`);
         }
         assert.ok(Array.isArray(agentConfig.hooks?.preToolUse), 'agent config preToolUse should be an array');
+    });
+
+    it('AGENTS.md and Kiro steering reference update_graph and the TOON response format', async () => {
+        await setupKiroIntegration(tmpDir, { hasUserConsent: true });
+
+        const agentsMd = fs.readFileSync(path.join(tmpDir, 'AGENTS.md'), 'utf-8');
+        const steeringMd = fs.readFileSync(path.join(tmpDir, '.kiro', 'steering', 'lgraph.md'), 'utf-8');
+
+        assert.ok(agentsMd.includes('update_graph'), 'AGENTS.md should reference update_graph');
+        assert.ok(steeringMd.includes('update_graph'), 'Kiro steering should reference update_graph');
+        assert.ok(/toon/i.test(agentsMd), 'AGENTS.md should describe the TOON response format');
+        assert.ok(/toon/i.test(steeringMd), 'Kiro steering should describe the TOON response format');
     });
 });
 

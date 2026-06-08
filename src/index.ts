@@ -58,7 +58,6 @@ program
 const startCmd = program
     .command('start')
     .description('Start the Latentgraph daemon for this project')
-    .option('--guest', 'Use guest authentication (auto-creates a temporary project)')
     .option('-k, --api-key <key>', 'Provide your Latentgraph API key directly')
     .option('--gh-token <token>', 'GitHub token for PR insights (optional)')
     .option('-n, --project-name <name>', 'Create a new project or match an existing one by name')
@@ -66,7 +65,6 @@ const startCmd = program
     .action(async (options) => {
         const { startCommand } = await import('./cli/commands/start.js');
         await startCommand({
-            guest: options.guest,
             apiKey: options.apiKey,
             ghToken: options.ghToken,
             projectName: options.projectName,
@@ -84,7 +82,6 @@ Details:
 
 Examples:
   lgraph start                               Interactive setup
-  lgraph start --guest                       Quick start without API key
   lgraph start -k <key> -n "My App"
   lgraph start -k <key> --gh-token ghp_...   Set API key and GitHub token at once
 `,
@@ -95,7 +92,6 @@ const initCmd = program
     .command('init')
     .description('Initialize and scan the project for file indexing')
     .option('-f, --force', 'Force re-indexing even if the project is already indexed')
-    .option('--guest', 'Use guest authentication (auto-creates a temporary project)')
     .option('-k, --api-key <key>', 'Provide your Latentgraph API key directly')
     .option('--gh-token <token>', 'GitHub token for PR insights (optional)')
     .option('-n, --project-name <name>', 'Create a new project or match an existing one by name')
@@ -104,7 +100,6 @@ const initCmd = program
         const { initCommand } = await import('./cli/commands/init.js');
         await initCommand({
             force: options.force ?? false,
-            guest: options.guest,
             apiKey: options.apiKey,
             ghToken: options.ghToken,
             projectName: options.projectName,
@@ -126,7 +121,6 @@ Details:
 Examples:
   lgraph init                                    Interactive initialization
   lgraph init -f                                 Force re-index without prompt
-  lgraph init --guest                            Quick init with guest auth
   lgraph init -k <key> -n "My App"
   lgraph init -k <key> --gh-token ghp_...        Set API key and GitHub token at once
 `,
@@ -164,7 +158,7 @@ statusCmd.addHelpText(
     `
 Details:
   Displays a comprehensive overview of:
-    - API key configuration (guest or authenticated)
+    - API key configuration
     - Project details (name, ID)
     - Registered agents
     - Backend indexing status and file count

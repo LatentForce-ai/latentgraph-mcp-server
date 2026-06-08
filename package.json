@@ -1,6 +1,6 @@
 {
     "name": "@latentforce/latentgraph",
-    "version": "1.0.27",
+    "version": "1.0.35",
     "description": "Latentgraph CLI - AI-powered code intelligence with MCP support",
     "type": "module",
     "main": "./build/index.js",
@@ -54,6 +54,7 @@
     "dependencies": {
         "@modelcontextprotocol/sdk": "^1.25.3",
         "@netlify/framework-info": "^10.0.5",
+        "@toon-format/toon": "2.3.0",
         "commander": "^12.0.0",
         "g": "^2.0.1",
         "js-tiktoken": "^1.0.21",

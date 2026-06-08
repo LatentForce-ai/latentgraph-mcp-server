@@ -2,14 +2,16 @@ import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 
-// Matching extension's file-tools.js exclude patterns
+// Matching extension's file-tools.js exclude patterns.
+// Matched by EXACT name against each entry (dir or file). Substring match was
+// removed because it killed monorepo source dirs like `packages/` (npm/pnpm
+// workspaces) and source files like `build.ts` or `env-config.ts`.
 const DEFAULT_EXCLUDE_PATTERNS = [
     // --- General ---
     '.git',
     '.vscode',
     '.idea',
     '.lgraph',
-    '.env',
 
     // --- Python ---
     '__pycache__',
@@ -41,13 +43,19 @@ const DEFAULT_EXCLUDE_PATTERNS = [
     '.cmake',
 
     // --- C# / .NET ---
+    // 'packages' intentionally omitted: legacy NuGet uses it, but every npm/pnpm
+    // workspace stores its source there. The binary NuGet artifacts inside are
+    // already filtered by SKIP_FILE_EXTENSIONS (.dll, .nupkg, etc.).
     'bin',
     'obj',
-    'packages',
     '.vs',
     'TestResults',
     'publish',
 ];
+
+// File-name PREFIXES to exclude. Keeps `.env`, `.env.local`, `.env.production`
+// out of the scan without resorting to substring matching on every entry.
+const EXCLUDE_FILE_PREFIXES = ['.env'];
 
 // File extensions to skip — binaries, compiled output, images, archives, lock files
 const SKIP_FILE_EXTENSIONS = new Set([
@@ -168,7 +176,13 @@ export async function getProjectTree(
             if (entry.isSymbolicLink()) {
                 continue;
             }
-            if (exclude_patterns.some(pattern => entry.name.includes(pattern))) {
+            // Only apply exclude patterns to DIRECTORIES with EXACT match
+            // (not substring match on file names - that incorrectly skips files like "CombinedChart.java" due to "bin" pattern)
+            if (entry.isDirectory() && exclude_patterns.includes(entry.name)) {
+                continue;
+            }
+            // File-name prefix excludes (e.g. `.env`, `.env.local`, `.env.production`).
+            if (entry.isFile() && EXCLUDE_FILE_PREFIXES.some(p => entry.name.startsWith(p))) {
                 continue;
             }
 

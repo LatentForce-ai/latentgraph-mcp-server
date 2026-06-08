@@ -6,7 +6,7 @@
 
 AI-powered code intelligence CLI and MCP server.
 
-Latentgraph indexes your codebase, builds a dependency relationship graph (DRG), and provides AI-powered insights via MCP tools — enabling AI coding assistants to understand your project's structure, dependencies, and blast radius of changes.
+Latentgraph indexes your codebase, builds a dependency relationship graph (DRG), and provides AI-powered insights via MCP tools - enabling AI coding assistants to understand your project's structure, dependencies, and blast radius of changes.
 
 ---
 
@@ -90,7 +90,7 @@ lgraph status   # Step 3: Verify everything is connected
 
 When you run `lgraph start` interactively, it will:
 
-1. **Ask for your API key** — paste the key from your dashboard, or choose guest mode
+1. **Ask for your API key** — paste the key from your dashboard
 2. **Ask to create or select a project** — you can either:
    - Select an existing project from your account
    - Create a new project directly from the CLI (prompts for a name and migration template)
@@ -131,7 +131,7 @@ Resolves authentication, configures the project, and launches a background daemo
 
 **Interactive flow (no flags):**
 
-1. Prompts for your API key or guest mode
+1. Prompts for your API key
 2. Prompts to select an existing project or create a new one
    - If creating: asks for a project name and lets you pick a migration template
 3. Saves config to `.lgraph/config.json`
@@ -139,7 +139,6 @@ Resolves authentication, configures the project, and launches a background daemo
 
 | Flag | Short | Description |
 |---|---|---|
-| `--guest` | | Use guest authentication (auto-creates a temporary project) |
 | `--api-key <key>` | `-k` | Provide API key directly (skips the key prompt) |
 | `--project-name <name>` | `-n` | Create new project or match existing by name |
 | `--project-id <id>` | | Use existing project UUID |
@@ -147,7 +146,6 @@ Resolves authentication, configures the project, and launches a background daemo
 
 ```bash
 lgraph start                                    # Interactive setup
-lgraph start --guest                            # Quick start without API key
 lgraph start -k <key> -n "My App"               # Non-interactive
 lgraph start -k <key> --gh-token ghp_...        # Set API key and GitHub token at once
 ```
@@ -163,7 +161,6 @@ If the project is already indexed, you will be prompted to re-index. Use `--forc
 | Flag | Short | Description |
 |---|---|---|
 | `--force` | `-f` | Force re-indexing even if already indexed |
-| `--guest` | | Use guest authentication |
 | `--api-key <key>` | `-k` | Provide API key directly |
 | `--project-name <name>` | `-n` | Create new project or match existing by name |
 | `--project-id <id>` | | Use existing project UUID |
@@ -172,7 +169,6 @@ If the project is already indexed, you will be prompted to re-index. Use `--forc
 ```bash
 lgraph init                                      # Interactive initialization
 lgraph init -f                                   # Force re-index without prompt
-lgraph init --guest                              # Quick init with guest auth
 lgraph init -k <key> -n "My App"                 # Non-interactive
 lgraph init -k <key> --gh-token ghp_...          # Set API key and GitHub token at once
 ```
@@ -524,7 +520,7 @@ Every tool accepts an optional `project_id` (falls back to `LGRAPH_PROJECT_ID`) 
 
 - **Node.js:** 18 or newer
 - **npm:** 8 or newer (bundled with Node.js)
-- A free API key from [latentgraph.latentforce.ai](https://latentgraph.latentforce.ai/auth) (or use `--guest` mode for a quick try)
+- A free API key from [latentgraph.latentforce.ai](https://latentgraph.latentforce.ai/auth)
 
 ---
 
@@ -546,4 +542,4 @@ Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get
 
 ## License
 
-MIT - see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).

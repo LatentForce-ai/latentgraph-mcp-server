@@ -1,10 +1,13 @@
-import { readProjectConfig, setProject, ensureScanTargetFile, isReadOnlyProject, getGithubToken, setGithubToken } from '../../utils/config.js';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { readProjectConfig, writeProjectConfig, ensureScanTargetFile, isReadOnlyProject, getGithubToken, setGithubToken } from '../../utils/config.js';
 import { startDaemon, getDaemonStatus } from '../../daemon/daemon-manager.js';
 import { resolveApiKey, resolveProject } from '../../utils/auth-resolver.js';
 import { promptGithubToken } from '../../utils/prompts.js';
 
+const execAsync = promisify(exec);
+
 export interface StartOptions {
-    guest?: boolean;
     apiKey?: string;
     ghToken?: string;
     projectName?: string;
@@ -13,7 +16,7 @@ export interface StartOptions {
 
 export async function startCommand(options: StartOptions = {}): Promise<void> {
     const projectRoot = process.cwd();
-    const isAuthInteractive = !options.guest && !options.apiKey;
+    const isAuthInteractive = !options.apiKey;
     const isProjectInteractive = !!(process.stdin.isTTY);
 
     // Block contributors and public viewers — no daemon needed; they use MCP tools directly
@@ -33,7 +36,6 @@ export async function startCommand(options: StartOptions = {}): Promise<void> {
     // Step 1: Resolve API key
     console.log('[Start] Step 1/5: Checking API key...');
     const authResult = await resolveApiKey({
-        guest: options.guest,
         apiKey: options.apiKey,
         interactive: isAuthInteractive,
         commandLabel: 'Start',
@@ -70,11 +72,6 @@ export async function startCommand(options: StartOptions = {}): Promise<void> {
     // Step 3: Resolve project
     console.log('[Start] Step 3/5: Checking project configuration...');
 
-    // If guest flow returned a project_id, save it before resolving
-    if (authResult.projectId && !readProjectConfig(projectRoot)) {
-        setProject(authResult.projectId, options.projectName || 'Guest Project', projectRoot);
-    }
-
     const project = await resolveProject({
         apiKey,
         projectId: options.projectId,
@@ -88,6 +85,21 @@ export async function startCommand(options: StartOptions = {}): Promise<void> {
     if (!projectConfig) {
         console.error('❌ Failed to configure project');
         process.exit(1);
+    }
+
+    // Persist default_branch when missing — only lgraph init sets it normally,
+    // but lgraph update needs it. Read from git so users don't have to re-init
+    // after deleting .lgraph.
+    if (!projectConfig.default_branch && !projectConfig.user_branch) {
+        try {
+            const { stdout } = await execAsync('git branch --show-current', { cwd: projectRoot });
+            const branch = stdout.trim();
+            if (branch) {
+                projectConfig.default_branch = branch;
+                writeProjectConfig(projectConfig, projectRoot);
+                console.log(`[Start] ✓ Branch detected: ${branch}\n`);
+            }
+        } catch { /* not a git repo or git unavailable — skip */ }
     }
 
     // Ensure .lgraph/scan_target.json exists (template for user customization)

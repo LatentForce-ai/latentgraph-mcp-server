@@ -148,31 +148,31 @@ function resolveConfig(cwd) {
     return { apiUrl, apiKey, projectId };
 }
 
-function formatFileContext(data) {
+function formatFileContext(fileData, depsData) {
     const lines = [];
-    lines.push('[Latentgraph] File: ' + (data.path || '') + (data.module_name ? ' | Module: ' + data.module_name : ''));
-    if (data.summary) lines.push('Summary: ' + data.summary);
+    lines.push('[Latentgraph] File: ' + (fileData.path || '') + (fileData.module_name ? ' | Module: ' + fileData.module_name : ''));
+    if (fileData.summary) lines.push('Summary: ' + fileData.summary);
 
-    const implicits = (data.implicit_dependencies_preview || [])
-        .filter(function(dep) { return dep && dep.strength === 'tight'; })
+    // Post-redesign: implicit couplings live on outgoing[] with implicit:true.
+    // No coupling_type/mechanism/strength on the new wire — summary carries
+    // the equivalent semantic in one field.
+    const implicits = ((depsData && depsData.outgoing) || [])
+        .filter(function(edge) { return edge && edge.implicit === true; })
         .slice(0, 5);
 
     if (implicits.length > 0) {
-        lines.push('Tight implicit couplings:');
-        for (const dep of implicits) {
-            lines.push('- ' + dep.path);
-            if (dep.coupling_type) lines.push('  coupling_type: ' + dep.coupling_type);
-            if (dep.coupling_mechanism) lines.push('  coupling_mechanism: ' + dep.coupling_mechanism);
-            if (dep.strength) lines.push('  strength: ' + dep.strength);
-            if (dep.dependency_types) lines.push('  dependency_types: ' + (Array.isArray(dep.dependency_types) ? dep.dependency_types.join(', ') : dep.dependency_types));
-            if (dep.edge_summary) lines.push('  edge_summary: ' + dep.edge_summary);
+        lines.push('Implicit couplings (outgoing):');
+        for (const edge of implicits) {
+            lines.push('- ' + edge.target);
+            if (edge.summary) lines.push('  summary: ' + edge.summary);
+            if (edge.data_flow) lines.push('  data_flow: ' + edge.data_flow);
         }
     }
 
-    const dependents = (data.dependents || []).slice(0, 5);
+    const dependents = ((depsData && depsData.incoming) || []).slice(0, 5);
     if (dependents.length > 0) {
         lines.push('Dependents:');
-        for (const dep of dependents) lines.push('- ' + dep);
+        for (const dep of dependents) lines.push('- ' + dep.source);
     }
 
     return lines.join('\\n');
@@ -187,19 +187,34 @@ async function fetchFileContext(filePath, cwd) {
         const controller = new AbortController();
         const timeout = setTimeout(function() { controller.abort(); }, 7000);
 
-        const response = await fetch(config.apiUrl + '/api/v1/mcp/what-is-this-file', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': 'Bearer ' + config.apiKey,
-            },
-            body: JSON.stringify({ path: normalized, project_id: config.projectId, level: 0 }),
-            signal: controller.signal,
-        });
+        const baseHeaders = {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + config.apiKey,
+        };
+
+        // Two endpoints — /what-is-this-file no longer carries implicit
+        // couplings or dependents (moved to /dependency in the 9-tool
+        // redesign). Fire in parallel to keep latency at single-call cost.
+        const [fileResp, depsResp] = await Promise.all([
+            fetch(config.apiUrl + '/api/v1/mcp/what-is-this-file', {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({ path: normalized, project_id: config.projectId, level: 0 }),
+                signal: controller.signal,
+            }),
+            fetch(config.apiUrl + '/api/v1/mcp/dependency', {
+                method: 'POST',
+                headers: baseHeaders,
+                body: JSON.stringify({ path: normalized, project_id: config.projectId }),
+                signal: controller.signal,
+            }),
+        ]);
 
         clearTimeout(timeout);
-        if (!response.ok) return null;
-        return formatFileContext(await response.json());
+        if (!fileResp.ok) return null;
+        const fileData = await fileResp.json();
+        const depsData = depsResp.ok ? await depsResp.json() : null;
+        return formatFileContext(fileData, depsData);
     } catch {
         return null;
     }
@@ -251,15 +266,15 @@ async function main() {
             suggestion =
                 '[Latentgraph] You are searching for dependency patterns. ' +
                 'Use mcp__lgraph__get_dependencies instead — it returns the bidirectional graph ' +
-                'with relationship types, imported names, reverse deps, dependency summaries, ' +
-                'and implicit coupling strength. Use mcp__lgraph__get_change_impact for downstream impact.';
+                'with imported names, dependency summaries, and implicit coupling. ' +
+                'Read \`incoming\` for the downstream blast radius (who depends on this file).';
         } else if (pattern) {
             suggestion =
                 '[Latentgraph] This project has a pre-built DRG plus CodeWiki module docs. ' +
                 'Before grepping indexed source files, consider:\\n' +
                 '  - mcp__lgraph__get_file — file summary, symbols, endpoints, dependents\\n' +
-                '  - mcp__lgraph__get_dependencies — bidirectional relationships, imports, coupling\\n' +
-                '  - mcp__lgraph__get_change_impact — downstream blast radius';
+                '  - mcp__lgraph__get_dependencies — bidirectional relationships, imports, coupling (\`incoming\` = blast radius)\\n' +
+                '  - mcp__lgraph__get_symbol — locate a function/class by name';
         }
 
         if (suggestion && shouldEmitOnce(sessionId, 'grep:' + pattern)) {
@@ -278,9 +293,9 @@ async function main() {
         if (looksLikeSourceGlob && shouldEmitOnce(sessionId, 'glob:' + pattern)) {
             process.stdout.write(
                 '[Latentgraph] Before globbing indexed source files, consider:\\n' +
-                '  - mcp__lgraph__get_context(targets=["project"]) — architecture summary and top-level modules\\n' +
-                '  - mcp__lgraph__get_context(targets=["project"], depth=-1, include_files=true) — logical modules and owning files\\n' +
-                '  - mcp__lgraph__get_context(targets=["..."]) — module docs, key files, and context\\n'
+                '  - mcp__lgraph__get_project_overview() — architecture summary and top-level modules\\n' +
+                '  - mcp__lgraph__get_module_info(module_path="X") — files and child modules for a specific module\\n' +
+                '  - mcp__lgraph__get_symbol(name="X") — locate a function/class without scanning paths\\n'
             );
         }
         process.exit(0);
@@ -298,13 +313,13 @@ async function main() {
             const suggestion = isDependencySearch
                 ? '[Latentgraph] You are searching for dependency patterns in the terminal. ' +
                   'Use mcp__lgraph__get_dependencies instead — it returns the bidirectional graph ' +
-                  'with relationship types, imported names, reverse deps, dependency summaries, ' +
-                  'and implicit coupling strength. Use mcp__lgraph__get_change_impact for downstream impact.'
+                  'with imported names, dependency summaries, and implicit coupling. ' +
+                  'Read \`incoming\` for the downstream blast radius (who depends on this file).'
                 : '[Latentgraph] You are running a source-code search. Consider using MCP first:\\n' +
-                  '  - mcp__lgraph__get_context(targets=["project"]) for navigation\\n' +
-                  '  - mcp__lgraph__get_dependencies for bidirectional relationships, imports, coupling\\n' +
-                  '  - mcp__lgraph__get_change_impact for downstream blast radius\\n' +
-                  '  - mcp__lgraph__get_file for file summary, symbols, endpoints, dependents';
+                  '  - mcp__lgraph__get_project_overview() for navigation and architecture\\n' +
+                  '  - mcp__lgraph__get_symbol(name="X") to locate a definition by name\\n' +
+                  '  - mcp__lgraph__get_dependencies for relationships and coupling (\`incoming\` = blast radius)\\n' +
+                  '  - mcp__lgraph__get_file for one file\\'s metadata';
             const dedupeKey = 'bash:' + command.slice(0, 120);
             if (shouldEmitOnce(sessionId, dedupeKey)) {
                 process.stdout.write(suggestion + '\\n');

@@ -66,7 +66,7 @@ async function askYesNoPrompt(title: string, changes: string[], consentOverride?
     const rl = createInterface({ input: process.stdin, output: process.stdout });
 
     return new Promise((resolve) => {
-        rl.question('  Proceed? (Y/n): ', (answer) => {
+        rl.question('  Proceed? (y/n, default yes): ', (answer) => {
             rl.close();
             const trimmed = answer.trim().toLowerCase();
             resolve(trimmed === '' || trimmed === 'y' || trimmed === 'yes');

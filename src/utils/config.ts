@@ -23,7 +23,6 @@ const DEFAULT_WS_URL = 'wss://latentgraph-orch.latentforce.ai';
 // const DEFAULT_WS_URL = 'ws://localhost:9999';
 export interface GlobalConfig {
     api_key: string;
-    key_type?: 'paid' | 'guest';
     // Environment URLs (stored for global npm installs)
     api_url?: string;
     orch_url?: string;
@@ -93,6 +92,11 @@ export interface DaemonStatus {
     connected: boolean;
     project_id: string;
     started_at: string;
+    // The directory the daemon was started from. Tool calls (git, read_files)
+    // run here; if this directory is moved or deleted later, the daemon's
+    // proxied work fails silently. Optional for backwards-compat with older
+    // status files written before this field was added.
+    working_directory?: string;
 }
 
 // --- Global Config Functions ---
@@ -128,27 +132,12 @@ export function getApiKey(): string | null {
 export function setApiKey(apiKey: string): void {
     const config = readGlobalConfig() || { api_key: '' };
     config.api_key = apiKey;
-    delete config.key_type;
     writeGlobalConfig(config);
-}
-
-export function setGuestKey(apiKey: string): void {
-    const config: GlobalConfig = {
-        api_key: apiKey,
-        key_type: 'guest',
-    };
-    writeGlobalConfig(config);
-}
-
-export function isGuestKey(): boolean {
-    const config = readGlobalConfig();
-    return config?.key_type === 'guest';
 }
 
 export function clearApiKey(): void {
     const config = readGlobalConfig() || { api_key: '' };
     config.api_key = '';
-    delete config.key_type;
     writeGlobalConfig(config);
 }
 
