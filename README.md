@@ -193,10 +193,18 @@ Scans source files across all supported languages, detects git changes, and send
 
 | Language | Extensions |
 |---|---|
-| JavaScript / TypeScript | `.js` `.jsx` `.ts` `.tsx` `.mjs` `.cjs` |
-| Python | `.py` |
+| JavaScript / TypeScript | `.js` `.jsx` `.mjs` `.cjs` `.ts` `.tsx` |
+| Python | `.py` `.pyw` |
 | C# | `.cs` |
-| C / C++ | `.cpp` `.cc` `.cxx` `.c` `.h` `.hpp` |
+| C | `.c` `.h` |
+| C++ | `.cpp` `.cc` `.cxx` `.hpp` `.hxx` `.hh` |
+| Java | `.java` |
+| Go | `.go` |
+| Kotlin | `.kt` `.kts` |
+| Rust | `.rs` |
+| PHP | `.php` `.php5` |
+| Ruby | `.rb` `.rake` |
+| Swift | `.swift` |
 
 | Flag | Short | Description |
 |---|---|---|
@@ -428,7 +436,7 @@ The file is a JSON array. Each entry has:
 | `language` | `string \| null` | Language to use, or `null` for auto-detect |
 | `path` | `string` | Relative path from project root (`""` for root) |
 
-**Valid language values:** `javascript`, `typescript`, `python`, `cpp`, `csharp`
+**Valid language values:** `javascript`, `typescript`, `python`, `c`, `cpp`, `csharp`, `java`, `go`, `kotlin`, `rust`, `php`, `ruby`, `swift`
 
 ### Default (auto-detect)
 
